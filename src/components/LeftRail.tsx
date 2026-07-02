@@ -1,42 +1,82 @@
-import { Download, FileStack, FolderOpen, Grid3X3, Plus, Settings, X } from 'lucide-react';
+import { FolderOpen, Grid3X3, ListChecks, PanelRightOpen, Plus, Settings, Upload, X } from 'lucide-react';
 import { useCanvasStore } from '../store/canvasStore';
 
-function exportProject() {
-  const project = useCanvasStore.getState().project;
-  const blob = new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = `${project.name || 'canvaspro-project'}.json`;
-  anchor.click();
-  URL.revokeObjectURL(url);
+export type RailPanelId = 'canvases' | 'assets' | 'workflows' | 'files';
+
+interface LeftRailProps {
+  activePanel: RailPanelId | null;
+  onPanelChange: (panel: RailPanelId | null) => void;
 }
 
-export function LeftRail() {
+export function LeftRail({ activePanel, onPanelChange }: LeftRailProps) {
   const addPanelOpen = useCanvasStore((state) => state.addPanelOpen);
   const setAddPanelOpen = useCanvasStore((state) => state.setAddPanelOpen);
+
+  const openAddPanel = () => {
+    onPanelChange(null);
+    setAddPanelOpen(true);
+  };
+
+  const toggleAddPanel = () => {
+    onPanelChange(null);
+    setAddPanelOpen(!addPanelOpen);
+  };
+
+  const togglePanel = (panel: RailPanelId) => {
+    setAddPanelOpen(false);
+    onPanelChange(activePanel === panel ? null : panel);
+  };
 
   return (
     <aside className="left-rail" aria-label="工具栏">
       <button
         className={`rail-button rail-button-primary ${addPanelOpen ? 'is-active' : ''}`}
         type="button"
-        onClick={() => setAddPanelOpen(!addPanelOpen)}
+        onFocus={openAddPanel}
+        onMouseEnter={openAddPanel}
+        onMouseMove={openAddPanel}
+        onMouseOver={openAddPanel}
+        onPointerEnter={openAddPanel}
+        onPointerMove={openAddPanel}
+        onClick={toggleAddPanel}
         title={addPanelOpen ? '关闭节点菜单' : '添加节点'}
       >
         {addPanelOpen ? <X size={32} strokeWidth={2.8} /> : <Plus size={25} />}
       </button>
-      <button className="rail-button" type="button" title="素材">
-        <FileStack size={21} />
+      <button
+        className={`rail-button ${activePanel === 'canvases' ? 'is-active' : ''}`}
+        type="button"
+        title="AI 画布"
+        onClick={() => togglePanel('canvases')}
+      >
+        <PanelRightOpen size={21} />
       </button>
-      <button className="rail-button" type="button" title="项目">
-        <FolderOpen size={21} />
+      <button
+        className={`rail-button ${activePanel === 'assets' ? 'is-active' : ''}`}
+        type="button"
+        title="资产"
+        onClick={() => togglePanel('assets')}
+      >
+        <Upload size={22} />
       </button>
-      <button className="rail-button" type="button" title="工作流">
+      <button
+        className={`rail-button ${activePanel === 'workflows' ? 'is-active' : ''}`}
+        type="button"
+        title="工作流"
+        onClick={() => togglePanel('workflows')}
+      >
         <Grid3X3 size={21} />
       </button>
-      <button className="rail-button" type="button" title="导出 JSON" onClick={exportProject}>
-        <Download size={21} />
+      <button
+        className={`rail-button ${activePanel === 'files' ? 'is-active' : ''}`}
+        type="button"
+        title="文件管理"
+        onClick={() => togglePanel('files')}
+      >
+        <FolderOpen size={21} />
+      </button>
+      <button className="rail-button" type="button" title="任务列表">
+        <ListChecks size={21} />
       </button>
       <div className="rail-fill" />
       <button className="rail-button" type="button" title="设置">

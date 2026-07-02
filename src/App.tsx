@@ -12,7 +12,8 @@ import {
 import { Bot, Image, Maximize2, Sparkles } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AddNodePanel } from './components/AddNodePanel';
-import { LeftRail } from './components/LeftRail';
+import { LeftRail, type RailPanelId } from './components/LeftRail';
+import { RailPanels } from './components/RailPanels';
 import { TopBar } from './components/TopBar';
 import { StudioNodeCard } from './nodes/StudioNodeCard';
 import { useCanvasStore } from './store/canvasStore';
@@ -45,6 +46,7 @@ function CanvasWorkspace() {
   const setQuickPanelOpen = useCanvasStore((state) => state.setQuickPanelOpen);
   const [minimapVisible, setMinimapVisible] = useState(true);
   const [gridAlignEnabled, setGridAlignEnabled] = useState(false);
+  const [activeRailPanel, setActiveRailPanel] = useState<RailPanelId | null>(null);
   const { zoom } = useViewport();
   const { fitView, screenToFlowPosition, zoomTo } = useReactFlow<StudioNode, StudioEdge>();
 
@@ -97,12 +99,13 @@ function CanvasWorkspace() {
   return (
     <main className="studio-shell">
       <TopBar />
-      <LeftRail />
+      <LeftRail activePanel={activeRailPanel} onPanelChange={setActiveRailPanel} />
       {addPanelOpen && (
         <section className="floating-panel add-panel-wrap">
           <AddNodePanel />
         </section>
       )}
+      <RailPanels activePanel={activeRailPanel} onPanelChange={setActiveRailPanel} />
       <section className="canvas-stage">
         <ReactFlow<StudioNode, StudioEdge>
           key={activeCanvas.id}
