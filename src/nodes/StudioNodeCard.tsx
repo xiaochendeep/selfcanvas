@@ -1,20 +1,47 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react';
-import { FileStack, Image, LoaderCircle, Play, Sparkles, Text, Video } from 'lucide-react';
+import {
+  Box,
+  FileStack,
+  Globe2,
+  Image,
+  LayoutGrid,
+  LoaderCircle,
+  Music,
+  Play,
+  Sparkles,
+  Table2,
+  Text,
+  Upload,
+  Video,
+  type LucideIcon,
+} from 'lucide-react';
 import { useCanvasStore } from '../store/canvasStore';
 import type { NodeKind, StudioNode } from '../types';
 
-const iconByKind: Record<NodeKind, typeof Text> = {
+const iconByKind: Record<NodeKind, LucideIcon> = {
   text: Text,
   image: Image,
   video: Video,
+  audio: Music,
+  stage3d: Box,
+  panorama: Globe2,
+  storyboard: Table2,
+  collage: LayoutGrid,
   asset: FileStack,
+  upload: Upload,
 };
 
 const labelByKind: Record<NodeKind, string> = {
   text: '文本',
   image: '图像',
   video: '视频',
+  audio: '音频',
+  stage3d: '3D导演台',
+  panorama: '360全景图',
+  storyboard: '分镜脚本',
+  collage: '拼图',
   asset: '素材',
+  upload: '上传',
 };
 
 function OutputPreview({ node }: { node: StudioNode }) {
@@ -54,7 +81,16 @@ function OutputPreview({ node }: { node: StudioNode }) {
     );
   }
 
-  if (kind === 'asset' && outputs.assetName) {
+  if (outputs.imageUrl) {
+    return (
+      <div className="media-preview image-preview">
+        <img src={outputs.imageUrl} alt="mock preview" />
+        <span>{labelByKind[kind]}模拟结果</span>
+      </div>
+    );
+  }
+
+  if ((kind === 'asset' || kind === 'upload') && outputs.assetName) {
     return (
       <div className="asset-preview">
         <FileStack size={22} />
@@ -120,4 +156,3 @@ export function StudioNodeCard({ id, data, selected }: NodeProps<StudioNode>) {
     </article>
   );
 }
-

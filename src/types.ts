@@ -1,6 +1,16 @@
 import type { Edge, Node, Viewport } from '@xyflow/react';
 
-export type NodeKind = 'text' | 'image' | 'video' | 'asset';
+export type NodeKind =
+  | 'text'
+  | 'image'
+  | 'video'
+  | 'audio'
+  | 'stage3d'
+  | 'panorama'
+  | 'storyboard'
+  | 'collage'
+  | 'asset'
+  | 'upload';
 export type RunStatus = 'idle' | 'running' | 'success' | 'error';
 
 export interface NodeOutput {
@@ -63,4 +73,3 @@ export interface NodePreset {
   width: number;
   height: number;
 }
-

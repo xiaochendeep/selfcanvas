@@ -100,7 +100,6 @@ function CanvasWorkspace() {
       <LeftRail />
       {addPanelOpen && (
         <section className="floating-panel add-panel-wrap">
-          <div className="panel-kicker">添加节点</div>
           <AddNodePanel />
         </section>
       )}
@@ -138,7 +137,11 @@ function CanvasWorkspace() {
                 const kind = node.data?.kind;
                 if (kind === 'image') return '#5576ff';
                 if (kind === 'video') return '#70e1c8';
+                if (kind === 'audio') return '#f3bf6a';
+                if (kind === 'stage3d' || kind === 'panorama') return '#7a65e8';
+                if (kind === 'storyboard' || kind === 'collage') return '#9fa8c8';
                 if (kind === 'asset') return '#f3bf6a';
+                if (kind === 'upload') return '#70e1c8';
                 return '#a98bff';
               }}
             />

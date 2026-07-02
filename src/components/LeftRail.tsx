@@ -1,4 +1,4 @@
-import { Download, FileStack, FolderOpen, Grid3X3, Plus, Settings } from 'lucide-react';
+import { Download, FileStack, FolderOpen, Grid3X3, Plus, Settings, X } from 'lucide-react';
 import { useCanvasStore } from '../store/canvasStore';
 
 function exportProject() {
@@ -22,9 +22,9 @@ export function LeftRail() {
         className={`rail-button rail-button-primary ${addPanelOpen ? 'is-active' : ''}`}
         type="button"
         onClick={() => setAddPanelOpen(!addPanelOpen)}
-        title="添加节点"
+        title={addPanelOpen ? '关闭节点菜单' : '添加节点'}
       >
-        <Plus size={25} />
+        {addPanelOpen ? <X size={32} strokeWidth={2.8} /> : <Plus size={25} />}
       </button>
       <button className="rail-button" type="button" title="素材">
         <FileStack size={21} />
@@ -45,4 +45,3 @@ export function LeftRail() {
     </aside>
   );
 }
-
