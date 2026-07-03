@@ -1,6 +1,7 @@
 import {
   ArrowDownUp,
   Image,
+  ListChecks,
   Map,
   Package,
   Plus,
@@ -11,8 +12,10 @@ import {
   Volume2,
   X,
 } from 'lucide-react';
-import { useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { desktopTaskProvider } from '../services/desktopTaskProvider';
 import { useCanvasStore } from '../store/canvasStore';
+import type { DesktopTask, DesktopTaskCapability } from '../types';
 import type { RailPanelId } from './LeftRail';
 
 interface RailPanelsProps {
@@ -182,11 +185,60 @@ function CanvasPanel({ onClose }: { onClose: () => void }) {
   );
 }
 
+function TaskPanel({ onClose }: { onClose: () => void }) {
+  const [capability, setCapability] = useState<DesktopTaskCapability>({
+    available: false,
+    reason: '当前 Web 环境无法访问桌面后台任务',
+  });
+  const [tasks, setTasks] = useState<DesktopTask[]>([]);
+
+  useEffect(() => {
+    let mounted = true;
+    void Promise.all([desktopTaskProvider.getCapability(), desktopTaskProvider.listTasks()]).then(
+      ([nextCapability, nextTasks]) => {
+        if (!mounted) return;
+        setCapability(nextCapability);
+        setTasks(nextTasks);
+      },
+    );
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  return (
+    <PanelShell className="rail-panel-tasks" title="任务" onClose={onClose}>
+      <div className="task-panel-status">
+        {capability.available ? '桌面后台任务已连接' : '当前环境没有桌面后台任务'}
+      </div>
+      {tasks.length > 0 ? (
+        <div className="desktop-task-list">
+          {tasks.map((task) => (
+            <article className={`desktop-task-card task-${task.status}`} key={task.id}>
+              <div>
+                <strong>{task.title}</strong>
+                <span>{task.message ?? task.status}</span>
+              </div>
+              <span>{task.progress}%</span>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div className="task-empty">
+          <ListChecks size={30} />
+          <span>{capability.available ? '暂无后台任务' : '桌面任务不可用'}</span>
+        </div>
+      )}
+    </PanelShell>
+  );
+}
+
 export function RailPanels({ activePanel, onPanelChange }: RailPanelsProps) {
   const close = () => onPanelChange(null);
   if (!activePanel) return null;
   if (activePanel === 'assets') return <AssetsPanel onClose={close} />;
   if (activePanel === 'workflows') return <WorkflowPanel onClose={close} />;
   if (activePanel === 'files') return <FileManagerPanel onClose={close} />;
+  if (activePanel === 'tasks') return <TaskPanel onClose={close} />;
   return <CanvasPanel onClose={close} />;
 }

@@ -1,7 +1,7 @@
 import { FolderOpen, Grid3X3, ListChecks, PanelRightOpen, Plus, Settings, Upload, X } from 'lucide-react';
 import { useCanvasStore } from '../store/canvasStore';
 
-export type RailPanelId = 'canvases' | 'assets' | 'workflows' | 'files';
+export type RailPanelId = 'canvases' | 'assets' | 'workflows' | 'files' | 'tasks';
 
 interface LeftRailProps {
   activePanel: RailPanelId | null;
@@ -75,7 +75,12 @@ export function LeftRail({ activePanel, onPanelChange }: LeftRailProps) {
       >
         <FolderOpen size={21} />
       </button>
-      <button className="rail-button" type="button" title="任务列表">
+      <button
+        className={`rail-button ${activePanel === 'tasks' ? 'is-active' : ''}`}
+        type="button"
+        title="任务列表"
+        onClick={() => togglePanel('tasks')}
+      >
         <ListChecks size={21} />
       </button>
       <div className="rail-fill" />

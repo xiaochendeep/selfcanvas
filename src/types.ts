@@ -64,6 +64,30 @@ export interface StudioTask {
   error?: string;
 }
 
+export type DesktopTaskStatus = 'queued' | 'running' | 'success' | 'error' | 'canceled';
+
+export interface DesktopTask {
+  id: string;
+  title: string;
+  status: DesktopTaskStatus;
+  progress: number;
+  createdAt: string;
+  updatedAt: string;
+  message?: string;
+  error?: string;
+}
+
+export interface DesktopTaskCapability {
+  available: boolean;
+  reason?: string;
+}
+
+export interface DesktopTaskProvider {
+  getCapability: () => Promise<DesktopTaskCapability>;
+  listTasks: () => Promise<DesktopTask[]>;
+  cancelTask?: (taskId: string) => Promise<void>;
+}
+
 export interface NodePreset {
   kind: NodeKind;
   title: string;

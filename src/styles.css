@@ -918,6 +918,70 @@ button {
   height: min(560px, calc(100vh - 138px));
 }
 
+.rail-panel-tasks {
+  top: 118px;
+  width: 560px;
+  height: min(700px, calc(100vh - 150px));
+}
+
+.task-panel-status {
+  display: flex;
+  align-items: center;
+  min-height: 66px;
+  padding: 0 24px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.task-empty {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 22px;
+  font-weight: 900;
+}
+
+.desktop-task-list {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  overflow-y: auto;
+}
+
+.desktop-task-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 76px;
+  padding: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.desktop-task-card div {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.desktop-task-card strong {
+  color: #f5f6fb;
+  font-size: 15px;
+}
+
+.desktop-task-card span {
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 13px;
+  font-weight: 850;
+}
+
 .workflow-search {
   display: flex;
   align-items: center;
