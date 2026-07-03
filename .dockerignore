@@ -1,9 +1,7 @@
 node_modules
 dist
+.git
 .runtime
 output
 .env
-.DS_Store
-*.local
 *.log
-coverage

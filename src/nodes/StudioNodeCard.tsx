@@ -64,7 +64,7 @@ function OutputPreview({ node }: { node: StudioNode }) {
     return (
       <div className="media-preview image-preview">
         <img src={outputs.imageUrl} alt="generated preview" />
-        <span>模拟图像结果</span>
+        <span>图像结果</span>
       </div>
     );
   }
@@ -72,11 +72,21 @@ function OutputPreview({ node }: { node: StudioNode }) {
   if (kind === 'video' && outputs.videoUrl) {
     return (
       <div className="media-preview video-preview">
-        <img src={outputs.videoUrl} alt="video poster" />
+        <video src={outputs.videoUrl} muted playsInline controls />
         <div className="video-play">
           <Play size={20} fill="currentColor" />
         </div>
-        <span>模拟 5s 视频</span>
+        <span>视频结果</span>
+      </div>
+    );
+  }
+
+  if (kind === 'audio' && outputs.audioUrl) {
+    return (
+      <div className="audio-preview">
+        <Music size={20} />
+        <span>{outputs.text ?? '音频结果已生成'}</span>
+        <audio src={outputs.audioUrl} controls />
       </div>
     );
   }
@@ -85,7 +95,7 @@ function OutputPreview({ node }: { node: StudioNode }) {
     return (
       <div className="media-preview image-preview">
         <img src={outputs.imageUrl} alt="mock preview" />
-        <span>{labelByKind[kind]}模拟结果</span>
+        <span>{labelByKind[kind]}结果</span>
       </div>
     );
   }

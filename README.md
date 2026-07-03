@@ -1,8 +1,8 @@
 # CanvasPro UI Studio
 
-CanvasPro-style local interactive canvas MVP built with React, Vite, TypeScript, React Flow, Zustand, and lucide-react.
+CanvasPro-style local interactive canvas MVP built with React, Vite, TypeScript, React Flow, Zustand, lucide-react, a local Python bridge, and a BullMQ media worker.
 
-## Run
+## Frontend Only
 
 ```bash
 npm install
@@ -14,6 +14,23 @@ Open:
 ```text
 http://127.0.0.1:5190/
 ```
+
+## Full Local AI Stack
+
+Copy `.env.example` to `.env`, then set `SUB2API_API_KEY` if your Sub2API requires a key.
+
+```bash
+redis-server
+npm run worker
+npm run server
+npm run dev
+```
+
+Runtime endpoints:
+
+- Frontend: `http://127.0.0.1:5190/`
+- Local bridge: `http://127.0.0.1:8787/api/health`
+- Output files: `http://127.0.0.1:8787/output/...`
 
 ## Build
 
@@ -27,12 +44,15 @@ npm run build
 - Floating top bar, left rail, minimap, canvas controls, and quick-create button
 - Text, image, video, and asset nodes
 - Drag, zoom, connect, select, add nodes, and create new canvases
-- Mock generation adapter with running progress and offline preview output
+- Sub2API text/image jobs through an OpenAI-compatible API
+- AnyCap CLI video jobs through the local media worker
+- Task panel backed by BullMQ job status
+- File manager backed by generated files in `output/`
 - Local project persistence through `localStorage`
 - JSON export button in the left rail
 
-## Next Adapter Boundary
+## Provider Routing
 
-The current AI path is intentionally mocked in `src/services/mockGenerationAdapter.ts`.
-Replace or wrap that adapter to connect AnyCap, OpenAI-compatible APIs, or a local media backend without rewriting the canvas UI.
-
+- `text` and `image` nodes route to Sub2API.
+- `video` and `audio` nodes route to AnyCap.
+- Advanced nodes keep local previews until their real providers are wired.

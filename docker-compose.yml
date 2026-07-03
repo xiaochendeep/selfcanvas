@@ -1,0 +1,47 @@
+services:
+  selfcanvas:
+    build:
+      context: .
+    command: sh -c "npm run build && python3 server.py"
+    environment:
+      SELF_CANVAS_HOST: 0.0.0.0
+      SELF_CANVAS_PORT: 8787
+      REDIS_URL: redis://redis:6379/0
+      SUB2API_BASE_URL: ${SUB2API_BASE_URL:-http://10.0.0.239:3000}
+      SUB2API_API_KEY: ${SUB2API_API_KEY:-}
+      SUB2API_TEXT_MODEL: ${SUB2API_TEXT_MODEL:-gpt-4o-mini}
+      SUB2API_IMAGE_MODEL: ${SUB2API_IMAGE_MODEL:-gpt-image-2}
+      ANYCAP_BIN: ${ANYCAP_BIN:-anycap}
+      ANYCAP_VIDEO_MODEL: ${ANYCAP_VIDEO_MODEL:-seedance-2-fast}
+      ANYCAP_AUDIO_MODEL: ${ANYCAP_AUDIO_MODEL:-}
+      OUTPUT_DIR: /app/output
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./output:/app/output
+    depends_on:
+      - redis
+
+  media-worker:
+    build:
+      context: .
+    command: npm run worker
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      SUB2API_BASE_URL: ${SUB2API_BASE_URL:-http://10.0.0.239:3000}
+      SUB2API_API_KEY: ${SUB2API_API_KEY:-}
+      SUB2API_TEXT_MODEL: ${SUB2API_TEXT_MODEL:-gpt-4o-mini}
+      SUB2API_IMAGE_MODEL: ${SUB2API_IMAGE_MODEL:-gpt-image-2}
+      ANYCAP_BIN: ${ANYCAP_BIN:-anycap}
+      ANYCAP_VIDEO_MODEL: ${ANYCAP_VIDEO_MODEL:-seedance-2-fast}
+      ANYCAP_AUDIO_MODEL: ${ANYCAP_AUDIO_MODEL:-}
+      OUTPUT_DIR: /app/output
+    volumes:
+      - ./output:/app/output
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379"

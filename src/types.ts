@@ -12,11 +12,14 @@ export type NodeKind =
   | 'asset'
   | 'upload';
 export type RunStatus = 'idle' | 'running' | 'success' | 'error';
+export type GenerationJobStatus = 'queued' | 'running' | 'success' | 'error' | 'canceled';
 
 export interface NodeOutput {
   text?: string;
   imageUrl?: string;
   videoUrl?: string;
+  audioUrl?: string;
+  fileUrl?: string;
   assetName?: string;
 }
 
@@ -62,6 +65,34 @@ export interface StudioTask {
   logs: string[];
   result?: NodeOutput;
   error?: string;
+}
+
+export interface GenerationJob {
+  id: string;
+  nodeId: string;
+  kind: NodeKind;
+  provider: string;
+  model: string;
+  status: GenerationJobStatus;
+  progress: number;
+  prompt: string;
+  inputs: string[];
+  result?: NodeOutput;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type GeneratedFileType = 'image' | 'video' | 'audio' | 'other';
+
+export interface GeneratedFile {
+  id: string;
+  title: string;
+  type: GeneratedFileType;
+  url: string;
+  path: string;
+  size: number;
+  createdAt: string;
 }
 
 export type DesktopTaskStatus = 'queued' | 'running' | 'success' | 'error' | 'canceled';

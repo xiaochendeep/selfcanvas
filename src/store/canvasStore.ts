@@ -8,7 +8,7 @@ import {
   type Viewport,
 } from '@xyflow/react';
 import { create } from 'zustand';
-import { mockGenerationAdapter } from '../services/mockGenerationAdapter';
+import { generationClient } from '../services/generationClient';
 import { projectRepository } from '../services/projectRepository';
 import type { NodeKind, NodePreset, StudioCanvas, StudioEdge, StudioNode, StudioProject } from '../types';
 
@@ -215,6 +215,10 @@ function saveProject(project: StudioProject) {
   return nowIso();
 }
 
+function pause(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
 function updateActiveCanvas(project: StudioProject, updater: (canvas: StudioCanvas) => StudioCanvas) {
   const updatedAt = nowIso();
   const canvases = project.canvases.map((canvas) =>
@@ -315,10 +319,36 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     if (!node) return;
     get().updateNodeData(nodeId, { status: 'running', progress: 3, error: '', outputs: {} });
     try {
-      const outputs = await mockGenerationAdapter.run(node.data, (progress) => {
-        get().updateNodeData(nodeId, { progress });
+      let job = await generationClient.createJob({ nodeId, node: node.data });
+      get().updateNodeData(nodeId, {
+        progress: job.progress,
+        provider: job.provider,
+        model: job.model,
       });
-      get().updateNodeData(nodeId, { status: 'success', progress: 100, outputs });
+
+      while (job.status === 'queued' || job.status === 'running') {
+        await pause(900);
+        job = await generationClient.getJob(job.id);
+        get().updateNodeData(nodeId, {
+          status: 'running',
+          progress: Math.max(3, Math.min(99, job.progress)),
+          provider: job.provider,
+          model: job.model,
+        });
+      }
+
+      if (job.status === 'success') {
+        get().updateNodeData(nodeId, {
+          status: 'success',
+          progress: 100,
+          outputs: job.result ?? {},
+          provider: job.provider,
+          model: job.model,
+        });
+        return;
+      }
+
+      throw new Error(job.error || '生成任务失败');
     } catch (error) {
       get().updateNodeData(nodeId, {
         status: 'error',

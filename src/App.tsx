@@ -215,12 +215,12 @@ function CanvasWorkspace() {
           <div>
             <span className="panel-kicker">快捷生成</span>
             <h2>选择一个节点开始</h2>
-            <p>当前使用模拟适配器，先验证画布体验和任务状态。</p>
+            <p>生成会提交到本地任务队列，由 Sub2API 或 AnyCap 后台执行。</p>
           </div>
           <AddNodePanel compact />
           <div className="quick-panel-note">
             <Bot size={15} />
-            真实 AI 接口会接在同一个 adapter 边界上。
+            后台不可用时，节点会显示明确错误。
           </div>
         </section>
       )}

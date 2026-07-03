@@ -473,11 +473,16 @@ button {
   background: #111622;
 }
 
-.media-preview img {
+.media-preview img,
+.media-preview video {
   display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.media-preview video {
+  background: #07090f;
 }
 
 .media-preview span {
@@ -504,6 +509,37 @@ button {
   border-radius: 50%;
   color: white;
   background: rgba(0, 0, 0, 0.46);
+  pointer-events: none;
+}
+
+.video-preview:has(video) .video-play {
+  display: none;
+}
+
+.audio-preview {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 10px;
+  margin: 0 12px 12px;
+  padding: 12px;
+  border-radius: 14px;
+  color: #dce1f2;
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.audio-preview span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.audio-preview audio {
+  grid-column: 1 / -1;
+  width: 100%;
+  height: 34px;
 }
 
 .asset-preview {
@@ -982,6 +1018,19 @@ button {
   font-weight: 850;
 }
 
+.desktop-task-card.task-running {
+  border-color: rgba(79, 123, 255, 0.36);
+  background: rgba(79, 123, 255, 0.08);
+}
+
+.desktop-task-card.task-success {
+  border-color: rgba(125, 220, 151, 0.28);
+}
+
+.desktop-task-card.task-error {
+  border-color: rgba(255, 107, 116, 0.34);
+}
+
 .workflow-search {
   display: flex;
   align-items: center;
@@ -1159,6 +1208,7 @@ button {
 }
 
 .media-card {
+  position: relative;
   display: block;
   overflow: hidden;
   width: 100%;
@@ -1166,6 +1216,7 @@ button {
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.06);
   cursor: pointer;
+  text-decoration: none;
 }
 
 .media-card img {
@@ -1178,6 +1229,55 @@ button {
 
 .media-card:hover img {
   transform: scale(1.035);
+}
+
+.generated-media-card {
+  color: white;
+}
+
+.generated-media-fallback {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  color: rgba(255, 255, 255, 0.82);
+  background:
+    radial-gradient(circle at 50% 50%, rgba(79, 123, 255, 0.28), transparent 46%),
+    rgba(255, 255, 255, 0.06);
+}
+
+.generated-media-fallback.type-audio {
+  background:
+    radial-gradient(circle at 50% 50%, rgba(243, 191, 106, 0.28), transparent 46%),
+    rgba(255, 255, 255, 0.06);
+}
+
+.media-card-title {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 9px;
+  overflow: hidden;
+  padding: 5px 8px;
+  border-radius: 999px;
+  color: white;
+  background: rgba(0, 0, 0, 0.5);
+  font-size: 12px;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.media-empty {
+  display: grid;
+  grid-column: 1 / -1;
+  place-items: center;
+  min-height: 220px;
+  border-radius: 14px;
+  color: rgba(255, 255, 255, 0.52);
+  background: rgba(255, 255, 255, 0.045);
+  font-size: 16px;
+  font-weight: 900;
 }
 
 .canvas-controls {

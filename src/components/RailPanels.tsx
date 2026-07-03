@@ -13,9 +13,9 @@ import {
   X,
 } from 'lucide-react';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { desktopTaskProvider } from '../services/desktopTaskProvider';
+import { generationClient } from '../services/generationClient';
 import { useCanvasStore } from '../store/canvasStore';
-import type { DesktopTask, DesktopTaskCapability } from '../types';
+import type { GeneratedFile, GenerationJob } from '../types';
 import type { RailPanelId } from './LeftRail';
 
 interface RailPanelsProps {
@@ -31,10 +31,10 @@ const assetTabs = [
 
 const fileTabs = ['当前画布生成', '历史生成', '输出文件夹'] as const;
 const mediaFilters = [
-  { label: '所有', icon: Sparkles },
-  { label: '图像', icon: Image },
-  { label: '视频', icon: Video },
-  { label: '声音', icon: Volume2 },
+  { label: '所有', type: 'all', icon: Sparkles },
+  { label: '图像', type: 'image', icon: Image },
+  { label: '视频', type: 'video', icon: Video },
+  { label: '声音', type: 'audio', icon: Volume2 },
 ] as const;
 
 const mediaItems = [
@@ -122,10 +122,40 @@ function WorkflowPanel({ onClose }: { onClose: () => void }) {
 
 function FileManagerPanel({ onClose }: { onClose: () => void }) {
   const [activeTab, setActiveTab] = useState<(typeof fileTabs)[number]>('当前画布生成');
+  const [activeFilter, setActiveFilter] = useState<(typeof mediaFilters)[number]['type']>('all');
+  const [files, setFiles] = useState<GeneratedFile[]>([]);
+  const [filesError, setFilesError] = useState('');
   const thumbnails = useMemo(
     () => mediaItems.map((item) => ({ ...item, src: thumbnail(item.title, item.palette, item.shape) })),
     [],
   );
+  const visibleFiles = useMemo(() => {
+    if (activeFilter === 'all') return files;
+    return files.filter((file) => file.type === activeFilter);
+  }, [activeFilter, files]);
+
+  useEffect(() => {
+    let mounted = true;
+    const loadFiles = () => {
+      void generationClient
+        .listFiles()
+        .then((items) => {
+          if (!mounted) return;
+          setFiles(items);
+          setFilesError('');
+        })
+        .catch((error) => {
+          if (!mounted) return;
+          setFilesError(error instanceof Error ? error.message : String(error));
+        });
+    };
+    loadFiles();
+    const timer = window.setInterval(loadFiles, 4500);
+    return () => {
+      mounted = false;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   return (
     <PanelShell className="rail-panel-files" title="文件管理" onClose={onClose}>
@@ -139,10 +169,15 @@ function FileManagerPanel({ onClose }: { onClose: () => void }) {
       <div className="file-subtitle">{activeTab}媒体历史</div>
       <div className="media-filter-row">
         <div className="media-filters">
-          {mediaFilters.map((filter, index) => {
+          {mediaFilters.map((filter) => {
             const Icon = filter.icon;
             return (
-              <button className={index === 0 ? 'is-active' : ''} key={filter.label} type="button">
+              <button
+                className={activeFilter === filter.type ? 'is-active' : ''}
+                key={filter.label}
+                type="button"
+                onClick={() => setActiveFilter(filter.type)}
+              >
                 <Icon size={18} />
                 <span>{filter.label}</span>
               </button>
@@ -154,11 +189,29 @@ function FileManagerPanel({ onClose }: { onClose: () => void }) {
         </button>
       </div>
       <div className="media-grid">
-        {thumbnails.map((item) => (
-          <button className="media-card" key={item.title} type="button">
-            <img src={item.src} alt={item.title} />
-          </button>
-        ))}
+        {filesError && <div className="media-empty">文件服务暂不可用：{filesError}</div>}
+        {!filesError && files.length > 0 && visibleFiles.length === 0 && <div className="media-empty">暂无匹配媒体</div>}
+        {!filesError &&
+          files.length > 0 &&
+          visibleFiles.map((file) => (
+            <a className="media-card generated-media-card" href={file.url} key={file.id} target="_blank" rel="noreferrer">
+              {file.type === 'image' ? (
+                <img src={file.url} alt={file.title} />
+              ) : (
+                <div className={`generated-media-fallback type-${file.type}`}>
+                  {file.type === 'video' ? <Video size={34} /> : <Volume2 size={34} />}
+                </div>
+              )}
+              <span className="media-card-title">{file.title}</span>
+            </a>
+          ))}
+        {!filesError &&
+          files.length === 0 &&
+          thumbnails.map((item) => (
+            <button className="media-card" key={item.title} type="button">
+              <img src={item.src} alt={item.title} />
+            </button>
+          ))}
       </div>
     </PanelShell>
   );
@@ -186,47 +239,62 @@ function CanvasPanel({ onClose }: { onClose: () => void }) {
 }
 
 function TaskPanel({ onClose }: { onClose: () => void }) {
-  const [capability, setCapability] = useState<DesktopTaskCapability>({
-    available: false,
-    reason: '当前 Web 环境无法访问桌面后台任务',
-  });
-  const [tasks, setTasks] = useState<DesktopTask[]>([]);
+  const [jobs, setJobs] = useState<GenerationJob[]>([]);
+  const [error, setError] = useState('');
 
   useEffect(() => {
     let mounted = true;
-    void Promise.all([desktopTaskProvider.getCapability(), desktopTaskProvider.listTasks()]).then(
-      ([nextCapability, nextTasks]) => {
-        if (!mounted) return;
-        setCapability(nextCapability);
-        setTasks(nextTasks);
-      },
-    );
+    const loadJobs = () => {
+      void generationClient
+        .listJobs()
+        .then((items) => {
+          if (!mounted) return;
+          setJobs(items);
+          setError('');
+        })
+        .catch((nextError) => {
+          if (!mounted) return;
+          setJobs([]);
+          setError(nextError instanceof Error ? nextError.message : String(nextError));
+        });
+    };
+    loadJobs();
+    const timer = window.setInterval(loadJobs, 1400);
     return () => {
       mounted = false;
+      window.clearInterval(timer);
     };
   }, []);
+
+  const statusText: Record<GenerationJob['status'], string> = {
+    queued: '排队中',
+    running: '运行中',
+    success: '已完成',
+    error: '失败',
+    canceled: '已取消',
+  };
 
   return (
     <PanelShell className="rail-panel-tasks" title="任务" onClose={onClose}>
       <div className="task-panel-status">
-        {capability.available ? '桌面后台任务已连接' : '当前环境没有桌面后台任务'}
+        {error ? `后台任务不可用：${error}` : jobs.length > 0 ? '后台生成任务已连接' : '当前没有后台生成任务'}
       </div>
-      {tasks.length > 0 ? (
+      {jobs.length > 0 ? (
         <div className="desktop-task-list">
-          {tasks.map((task) => (
-            <article className={`desktop-task-card task-${task.status}`} key={task.id}>
+          {jobs.map((job) => (
+            <article className={`desktop-task-card task-${job.status}`} key={job.id}>
               <div>
-                <strong>{task.title}</strong>
-                <span>{task.message ?? task.status}</span>
+                <strong>{job.kind} · {job.model}</strong>
+                <span>{job.error || `${statusText[job.status]} · ${job.provider}`}</span>
               </div>
-              <span>{task.progress}%</span>
+              <span>{job.progress}%</span>
             </article>
           ))}
         </div>
       ) : (
         <div className="task-empty">
           <ListChecks size={30} />
-          <span>{capability.available ? '暂无后台任务' : '桌面任务不可用'}</span>
+          <span>{error ? '桌面任务不可用' : '暂无后台任务'}</span>
         </div>
       )}
     </PanelShell>
