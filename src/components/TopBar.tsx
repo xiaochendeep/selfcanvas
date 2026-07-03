@@ -14,7 +14,7 @@ export function TopBar() {
         <div className="brand-mark">
           <CircleDot size={23} />
         </div>
-        <span>CanvasPro UI Studio</span>
+        <span>SelfCanvas</span>
       </div>
       <div className="canvas-tabs" aria-label="画布分页">
         <button className="canvas-tab is-active" type="button">
@@ -37,4 +37,3 @@ export function TopBar() {
     </header>
   );
 }
-
