@@ -17,6 +17,7 @@ import { generationClient } from '../services/generationClient';
 import { useCanvasStore } from '../store/canvasStore';
 import type { GeneratedFile, GenerationJob } from '../types';
 import type { RailPanelId } from './LeftRail';
+import { SettingsPanel } from './SettingsPanel';
 
 interface RailPanelsProps {
   activePanel: RailPanelId | null;
@@ -308,5 +309,6 @@ export function RailPanels({ activePanel, onPanelChange }: RailPanelsProps) {
   if (activePanel === 'workflows') return <WorkflowPanel onClose={close} />;
   if (activePanel === 'files') return <FileManagerPanel onClose={close} />;
   if (activePanel === 'tasks') return <TaskPanel onClose={close} />;
+  if (activePanel === 'settings') return <SettingsPanel onClose={close} />;
   return <CanvasPanel onClose={close} />;
 }

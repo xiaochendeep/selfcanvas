@@ -1,7 +1,8 @@
 import { FolderOpen, Grid3X3, ListChecks, PanelRightOpen, Plus, Settings, Upload, X } from 'lucide-react';
+import { useState } from 'react';
 import { useCanvasStore } from '../store/canvasStore';
 
-export type RailPanelId = 'canvases' | 'assets' | 'workflows' | 'files' | 'tasks';
+export type RailPanelId = 'canvases' | 'assets' | 'workflows' | 'files' | 'tasks' | 'settings';
 
 interface LeftRailProps {
   activePanel: RailPanelId | null;
@@ -11,15 +12,23 @@ interface LeftRailProps {
 export function LeftRail({ activePanel, onPanelChange }: LeftRailProps) {
   const addPanelOpen = useCanvasStore((state) => state.addPanelOpen);
   const setAddPanelOpen = useCanvasStore((state) => state.setAddPanelOpen);
+  const [suppressHoverOpen, setSuppressHoverOpen] = useState(false);
 
   const openAddPanel = () => {
+    if (suppressHoverOpen) return;
     onPanelChange(null);
     setAddPanelOpen(true);
   };
 
   const toggleAddPanel = () => {
     onPanelChange(null);
-    setAddPanelOpen(!addPanelOpen);
+    if (addPanelOpen) {
+      setSuppressHoverOpen(true);
+      setAddPanelOpen(false);
+      return;
+    }
+    setSuppressHoverOpen(false);
+    setAddPanelOpen(true);
   };
 
   const togglePanel = (panel: RailPanelId) => {
@@ -32,12 +41,8 @@ export function LeftRail({ activePanel, onPanelChange }: LeftRailProps) {
       <button
         className={`rail-button rail-button-primary ${addPanelOpen ? 'is-active' : ''}`}
         type="button"
-        onFocus={openAddPanel}
-        onMouseEnter={openAddPanel}
-        onMouseMove={openAddPanel}
-        onMouseOver={openAddPanel}
         onPointerEnter={openAddPanel}
-        onPointerMove={openAddPanel}
+        onPointerLeave={() => setSuppressHoverOpen(false)}
         onClick={toggleAddPanel}
         title={addPanelOpen ? '关闭节点菜单' : '添加节点'}
       >
@@ -84,7 +89,12 @@ export function LeftRail({ activePanel, onPanelChange }: LeftRailProps) {
         <ListChecks size={21} />
       </button>
       <div className="rail-fill" />
-      <button className="rail-button" type="button" title="设置">
+      <button
+        className={`rail-button ${activePanel === 'settings' ? 'is-active' : ''}`}
+        type="button"
+        title="设置"
+        onClick={() => togglePanel('settings')}
+      >
         <Settings size={21} />
       </button>
     </aside>

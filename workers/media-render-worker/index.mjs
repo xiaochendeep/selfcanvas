@@ -11,6 +11,7 @@ const connection = new IORedis(redisUrl, { maxRetriesPerRequest: null });
 const worker = new Worker(
   queueName,
   async (job) => {
+    await loadDotEnv();
     await job.updateProgress(10);
     const result = await runProviderJob(job);
     await job.updateProgress(100);

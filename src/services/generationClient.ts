@@ -1,4 +1,4 @@
-import type { GeneratedFile, GenerationJob, NodeKind, StudioNodeData } from '../types';
+import type { GeneratedFile, GenerationJob, NodeKind, NodeReference, ProviderOptions, StudioNodeData } from '../types';
 
 interface CreateGenerationJobInput {
   nodeId: string;
@@ -13,6 +13,9 @@ interface CreateGenerationJobPayload {
   provider: string;
   model: string;
   inputs: string[];
+  targetNodeId: string;
+  references: NodeReference[];
+  options: ProviderOptions;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -43,6 +46,9 @@ export const generationClient = {
       provider: input.node.provider,
       model: input.node.model,
       inputs: input.node.inputs,
+      targetNodeId: input.nodeId,
+      references: input.node.references ?? [],
+      options: input.node.providerOptions ?? {},
     };
     return request<GenerationJob>('/api/generation/jobs', {
       method: 'POST',

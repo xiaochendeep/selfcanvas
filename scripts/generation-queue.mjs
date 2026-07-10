@@ -34,6 +34,7 @@ async function toGenerationJob(job) {
   return {
     id: String(job.id),
     nodeId: payload.nodeId || '',
+    targetNodeId: payload.targetNodeId || payload.nodeId || '',
     kind: payload.kind || 'text',
     provider: payload.provider || '',
     model: payload.model || '',
@@ -41,6 +42,8 @@ async function toGenerationJob(job) {
     progress: status === 'success' ? 100 : progressValue(job.progress),
     prompt: payload.prompt || '',
     inputs: Array.isArray(payload.inputs) ? payload.inputs : [],
+    references: Array.isArray(payload.references) ? payload.references : [],
+    options: payload.options && typeof payload.options === 'object' ? payload.options : {},
     result: job.returnvalue || undefined,
     error: job.failedReason || undefined,
     createdAt: payload.createdAt || new Date(job.timestamp || Date.now()).toISOString(),

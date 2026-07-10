@@ -14,13 +14,86 @@ export type NodeKind =
 export type RunStatus = 'idle' | 'running' | 'success' | 'error';
 export type GenerationJobStatus = 'queued' | 'running' | 'success' | 'error' | 'canceled';
 
+export interface StoryboardShot {
+  shotNumber: number;
+  shotSize: string;
+  visualDescription: string;
+  cameraMovement: string;
+  imagePrompt: string;
+  videoPrompt: string;
+}
+
+export interface StoryboardDocument {
+  version: 1;
+  shotCount: number;
+  shots: StoryboardShot[];
+}
+
 export interface NodeOutput {
   text?: string;
+  storyboard?: StoryboardDocument;
   imageUrl?: string;
   videoUrl?: string;
   audioUrl?: string;
   fileUrl?: string;
   assetName?: string;
+}
+
+export type ImportedMediaType = 'image' | 'video' | 'audio';
+
+export interface ImportedMedia {
+  id: string;
+  name: string;
+  type: ImportedMediaType;
+  mimeType: string;
+  size: number;
+  url: string;
+  path: string;
+}
+
+export type ProviderOptionValue = string | number | boolean;
+
+export interface ProviderOptions {
+  providerTool?: string;
+  model?: string;
+  mode?: string;
+  size?: string;
+  count?: number;
+  referenceQuality?: string;
+  outputFormat?: string;
+  transparentBackground?: boolean;
+  quality?: string;
+  resolutionTier?: string;
+  temperature?: number;
+  responseFormat?: string;
+  resolution?: string;
+  duration?: number;
+  aspectRatio?: string;
+  generateAudio?: boolean;
+  fps?: number;
+  format?: string;
+  multiShot?: boolean;
+  shotCount?: number;
+  promptMode?: 'image' | 'video';
+  viewMode?: 'list' | 'card';
+  style?: string;
+  voiceReference?: string;
+  targetVoice?: string;
+  voiceMode?: string;
+  systemPrompt?: string;
+}
+
+export interface NodeReference {
+  nodeId: string;
+  title: string;
+  kind: NodeKind | GeneratedFileType;
+  outputType: GeneratedFileType | 'text';
+  source: 'canvas' | 'output' | 'group';
+  groupId?: string;
+  url?: string;
+  path?: string;
+  thumbnailUrl?: string;
+  content?: string;
 }
 
 export interface StudioNodeData extends Record<string, unknown> {
@@ -33,17 +106,40 @@ export interface StudioNodeData extends Record<string, unknown> {
   model: string;
   inputs: string[];
   outputs: NodeOutput;
+  references?: NodeReference[];
+  providerOptions?: ProviderOptions;
+  importedMedia?: ImportedMedia;
+  uiRelation?: 'related' | 'dimmed';
+  lastJobId?: string;
   error?: string;
 }
 
 export type StudioNode = Node<StudioNodeData, 'studioNode'>;
 export type StudioEdge = Edge<Record<string, unknown>>;
 
+export interface CanvasGroupBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface CanvasGroup {
+  id: string;
+  name: string;
+  nodeIds: string[];
+  bounds: CanvasGroupBounds;
+  color: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface StudioCanvas {
   id: string;
   name: string;
   nodes: StudioNode[];
   edges: StudioEdge[];
+  groups: CanvasGroup[];
   viewport: Viewport;
 }
 
@@ -70,6 +166,7 @@ export interface StudioTask {
 export interface GenerationJob {
   id: string;
   nodeId: string;
+  targetNodeId?: string;
   kind: NodeKind;
   provider: string;
   model: string;
@@ -77,6 +174,8 @@ export interface GenerationJob {
   progress: number;
   prompt: string;
   inputs: string[];
+  references?: NodeReference[];
+  options?: ProviderOptions;
   result?: NodeOutput;
   error?: string;
   createdAt: string;

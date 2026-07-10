@@ -73,12 +73,24 @@ const menuSections: NodeMenuSection[] = [
   },
 ];
 
-export function AddNodePanel({ compact = false }: { compact?: boolean }) {
+export function AddNodePanel({
+  compact = false,
+  onImportRequest,
+}: {
+  compact?: boolean;
+  onImportRequest?: () => void;
+}) {
   const addNode = useCanvasStore((state) => state.addNode);
   const setAddPanelOpen = useCanvasStore((state) => state.setAddPanelOpen);
   const setQuickPanelOpen = useCanvasStore((state) => state.setQuickPanelOpen);
 
   const handleAdd = (kind: NodeKind) => {
+    if (kind === 'upload' && onImportRequest) {
+      onImportRequest();
+      setAddPanelOpen(false);
+      setQuickPanelOpen(false);
+      return;
+    }
     addNode(kind);
     setAddPanelOpen(false);
     setQuickPanelOpen(false);
