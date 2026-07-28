@@ -29,6 +29,55 @@ export interface StoryboardDocument {
   shots: StoryboardShot[];
 }
 
+export type MediaArtifactType = 'image' | 'video' | 'audio' | 'archive' | 'other';
+
+export interface MediaArtifact {
+  /** Opaque, output-directory-relative identifier. Never an absolute filesystem path. */
+  id: string;
+  name: string;
+  type: MediaArtifactType;
+  mimeType: string;
+  size: number;
+  previewUrl: string;
+  downloadUrl: string;
+}
+
+export type VideoOperation = 'generate' | 'ai-edit' | 'concat' | 'creative-edit';
+export type VideoTransition = 'cut' | 'crossfade';
+export type VideoAudioPolicy = 'keep' | 'preserve' | 'mute' | 'normalize';
+
+export interface VideoEditClip {
+  referenceKey?: string;
+  sourceIndex?: number;
+  inMs?: number;
+  outMs?: number;
+  in?: number;
+  out?: number;
+  duration?: number;
+  transition?: { type: VideoTransition; duration: number };
+}
+
+export interface VideoEditPlan {
+  version: 1;
+  operation?: 'ai-edit' | 'concat';
+  clips: VideoEditClip[];
+  transition?: VideoTransition;
+  transitionDurationMs?: number;
+  audioPolicy?: VideoAudioPolicy;
+  audio?: { policy: VideoAudioPolicy };
+  output: {
+    resolution?: string;
+    fps?: number;
+    format: 'mp4';
+    width?: number;
+    height?: number;
+    videoCodec?: string;
+    audioCodec?: string;
+  };
+  summaries?: Array<{ referenceKey: string; summary: string }>;
+  warnings?: string[];
+}
+
 export interface NodeOutput {
   text?: string;
   storyboard?: StoryboardDocument;
@@ -37,6 +86,11 @@ export interface NodeOutput {
   audioUrl?: string;
   fileUrl?: string;
   assetName?: string;
+  artifact?: MediaArtifact;
+  editPlan?: VideoEditPlan;
+  operation?: VideoOperation;
+  warnings?: string[];
+  planOnly?: boolean;
 }
 
 export type ImportedMediaType = 'image' | 'video' | 'audio';
@@ -48,7 +102,7 @@ export interface ImportedMedia {
   mimeType: string;
   size: number;
   url: string;
-  path: string;
+  path?: string;
 }
 
 export type ProviderOptionValue = string | number | boolean;
@@ -80,7 +134,20 @@ export interface ProviderOptions {
   voiceReference?: string;
   targetVoice?: string;
   voiceMode?: string;
+  sampleRate?: number;
+  speechRate?: number;
+  pitchRate?: number;
+  loudnessRate?: number;
+  enableSubtitle?: boolean;
+  speakerIds?: string[];
   systemPrompt?: string;
+  operation?: VideoOperation;
+  transition?: VideoTransition;
+  transitionDuration?: number;
+  audioPolicy?: VideoAudioPolicy;
+  planOnly?: boolean;
+  clips?: VideoEditClip[];
+  editPlan?: VideoEditPlan;
 }
 
 export interface NodeReference {
@@ -96,6 +163,14 @@ export interface NodeReference {
   content?: string;
 }
 
+export interface PromptMention {
+  id: string;
+  referenceKey: string;
+  text: string;
+  start: number;
+  end: number;
+}
+
 export interface StudioNodeData extends Record<string, unknown> {
   kind: NodeKind;
   title: string;
@@ -107,6 +182,7 @@ export interface StudioNodeData extends Record<string, unknown> {
   inputs: string[];
   outputs: NodeOutput;
   references?: NodeReference[];
+  referenceMentions?: PromptMention[];
   providerOptions?: ProviderOptions;
   importedMedia?: ImportedMedia;
   uiRelation?: 'related' | 'dimmed';
@@ -137,10 +213,16 @@ export interface CanvasGroup {
 export interface StudioCanvas {
   id: string;
   name: string;
+  createdAt: string;
+  updatedAt: string;
   nodes: StudioNode[];
   edges: StudioEdge[];
   groups: CanvasGroup[];
   viewport: Viewport;
+  /** Server-issued one-shot focus hint used by Codex/AI location actions. */
+  focusNodeId?: string;
+  focusRequestId?: string;
+  focusRevision?: number;
 }
 
 export interface StudioProject {
@@ -189,9 +271,12 @@ export interface GeneratedFile {
   title: string;
   type: GeneratedFileType;
   url: string;
-  path: string;
+  path?: string;
   size: number;
   createdAt: string;
+  mimeType?: string;
+  previewUrl?: string;
+  downloadUrl?: string;
 }
 
 export type DesktopTaskStatus = 'queued' | 'running' | 'success' | 'error' | 'canceled';

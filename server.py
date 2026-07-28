@@ -2,19 +2,29 @@
 from __future__ import annotations
 
 import json
+import base64
+import copy
+import hashlib
+import hmac
 import mimetypes
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import uuid
+import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, unquote, urljoin, urlparse
+from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 
@@ -22,7 +32,33 @@ ROOT = Path(__file__).resolve().parent
 DIST_DIR = ROOT / "dist"
 RUNTIME_DIR = ROOT / ".runtime"
 STORAGE_CONFIG_PATH = RUNTIME_DIR / "storage.json"
+PROJECT_STATE_PATH = RUNTIME_DIR / "project.json"
 QUEUE_SCRIPT = ROOT / "scripts" / "generation-queue.mjs"
+VIDEO_EDIT_QUEUE_SCRIPT = ROOT / "scripts" / "video-edit-queue.mjs"
+IDEMPOTENCY_PATH = RUNTIME_DIR / "idempotency.json"
+MANAGED_JOBS_PATH = RUNTIME_DIR / "managed-jobs.json"
+ARTIFACT_SECRET_PATH = RUNTIME_DIR / "artifact-secret"
+PROJECT_STATE_LOCK = threading.RLock()
+IDEMPOTENCY_LOCK = threading.RLock()
+EXPORT_JOBS_LOCK = threading.RLock()
+MANAGED_JOBS_LOCK = threading.RLock()
+BROWSER_SESSIONS_LOCK = threading.RLock()
+PROJECT_EVENT_CONDITION = threading.Condition()
+EXPORT_JOBS: dict[str, dict] = {}
+BROWSER_SESSIONS: dict[str, dict] = {}
+MAX_PROJECT_BYTES = 16 * 1024 * 1024
+MAX_COMMAND_OPERATIONS = 50
+BROWSER_SESSION_TTL_SECONDS = 60 * 60
+BROWSER_SESSION_COOKIE = "selfcanvas_session"
+ALLOWED_NODE_KINDS = {
+    "text", "image", "video", "audio", "stage3d", "panorama", "storyboard", "collage", "asset", "upload"
+}
+
+
+class ProjectRevisionConflict(RuntimeError):
+    def __init__(self, record: dict):
+        super().__init__("画布记录已被其他浏览器更新")
+        self.record = record
 
 
 def load_dotenv() -> None:
@@ -44,8 +80,111 @@ def load_dotenv() -> None:
 load_dotenv()
 
 
+def bounded_env_int(name: str, fallback: int, minimum: int, maximum: int) -> int:
+    try:
+        return max(minimum, min(maximum, int(os.environ.get(name, str(fallback)))))
+    except ValueError:
+        return fallback
+
+
+EXPORT_EXECUTOR = ThreadPoolExecutor(
+    max_workers=bounded_env_int("SELF_CANVAS_EXPORT_CONCURRENCY", 2, 1, 4),
+    thread_name_prefix="selfcanvas-export",
+)
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def read_json_file(path: Path, fallback):
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload
+    except (OSError, json.JSONDecodeError):
+        return copy.deepcopy(fallback)
+
+
+def write_json_atomic(path: Path, payload) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False, encoding="utf-8") as temp:
+            json.dump(payload, temp, ensure_ascii=False, separators=(",", ":"))
+            temp.flush()
+            os.fsync(temp.fileno())
+            temporary = Path(temp.name)
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def artifact_secret() -> bytes:
+    configured = os.environ.get("SELF_CANVAS_ARTIFACT_SECRET", "").strip()
+    if configured:
+        return configured.encode("utf-8")
+    try:
+        secret = ARTIFACT_SECRET_PATH.read_text(encoding="utf-8").strip()
+        if secret:
+            return secret.encode("ascii")
+    except OSError:
+        pass
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    secret = uuid.uuid4().hex + uuid.uuid4().hex
+    ARTIFACT_SECRET_PATH.write_text(secret, encoding="utf-8")
+    try:
+        ARTIFACT_SECRET_PATH.chmod(0o600)
+    except OSError:
+        pass
+    return secret.encode("ascii")
+
+
+def artifact_id_for_relative(relative: str) -> str:
+    normalized = Path(relative.replace("\\", "/")).as_posix().lstrip("/")
+    encoded = base64.urlsafe_b64encode(normalized.encode("utf-8")).decode("ascii").rstrip("=")
+    signature = hmac.new(artifact_secret(), encoded.encode("ascii"), hashlib.sha256).hexdigest()[:24]
+    return f"{encoded}.{signature}"
+
+
+def relative_from_artifact_id(artifact_id: str) -> str:
+    try:
+        encoded, signature = artifact_id.rsplit(".", 1)
+    except ValueError as error:
+        raise UploadError(404, "文件不存在") from error
+    expected = hmac.new(artifact_secret(), encoded.encode("ascii"), hashlib.sha256).hexdigest()[:24]
+    if not hmac.compare_digest(signature, expected):
+        raise UploadError(404, "文件不存在")
+    try:
+        padding = "=" * (-len(encoded) % 4)
+        relative = base64.urlsafe_b64decode(encoded + padding).decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as error:
+        raise UploadError(404, "文件不存在") from error
+    return relative
+
+
+def output_target_from_relative(relative: str) -> Path:
+    target = (output_dir() / relative).resolve()
+    if not is_inside_output(target) or not target.exists() or not target.is_file():
+        raise UploadError(404, "文件不存在")
+    return target
+
+
+def output_target_from_artifact_id(artifact_id: str) -> Path:
+    return output_target_from_relative(relative_from_artifact_id(artifact_id))
+
+
+def publish_project_event(record: dict, event_type: str = "project.updated", details: dict | None = None) -> None:
+    event = {
+        "type": event_type,
+        "revision": int(record.get("revision") or 0),
+        "savedAt": str(record.get("savedAt") or now_iso()),
+        **(details or {}),
+    }
+    with PROJECT_EVENT_CONDITION:
+        PROJECT_EVENT_CONDITION.event = event  # type: ignore[attr-defined]
+        PROJECT_EVENT_CONDITION.notify_all()
 
 
 def read_storage_config() -> dict:
@@ -57,6 +196,9 @@ def read_storage_config() -> dict:
 
 
 def configured_save_root() -> Path | None:
+    managed_root = os.environ.get("SELF_CANVAS_STORAGE_ROOT", "").strip()
+    if managed_root:
+        return Path(managed_root).expanduser().resolve()
     raw = str(read_storage_config().get("saveRoot") or "").strip()
     if not raw:
         return None
@@ -125,8 +267,413 @@ def read_json_body(handler: BaseHTTPRequestHandler) -> dict:
     length = int(handler.headers.get("Content-Length") or 0)
     if length <= 0:
         return {}
+    if length > MAX_PROJECT_BYTES:
+        raise RuntimeError("请求内容过大")
     raw = handler.rfile.read(length).decode("utf-8")
     return json.loads(raw or "{}")
+
+
+def validate_project(project) -> dict:
+    if not isinstance(project, dict):
+        raise RuntimeError("画布记录格式无效")
+    canvases = project.get("canvases")
+    active_canvas_id = str(project.get("activeCanvasId") or "").strip()
+    if not isinstance(canvases, list) or not canvases:
+        raise RuntimeError("画布记录至少需要一个画布")
+    if len(canvases) > 200:
+        raise RuntimeError("画布记录数量超过限制")
+    canvas_ids = {str(canvas.get("id") or "") for canvas in canvases if isinstance(canvas, dict)}
+    if not active_canvas_id or active_canvas_id not in canvas_ids:
+        raise RuntimeError("当前画布不存在")
+    return project
+
+
+def empty_project_record() -> dict:
+    return {"schemaVersion": 1, "revision": 0, "savedAt": "", "project": None}
+
+
+def read_project_record_unlocked() -> dict:
+    try:
+        payload = json.loads(PROJECT_STATE_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return empty_project_record()
+    if not isinstance(payload, dict):
+        raise RuntimeError("服务器画布记录已损坏")
+    if "project" not in payload:
+        return {
+            "schemaVersion": 1,
+            "revision": 1,
+            "savedAt": str(payload.get("updatedAt") or ""),
+            "project": validate_project(payload),
+        }
+    project = payload.get("project")
+    if project is not None:
+        project = validate_project(project)
+    return {
+        "schemaVersion": 1,
+        "revision": max(0, int(payload.get("revision") or 0)),
+        "savedAt": str(payload.get("savedAt") or ""),
+        "project": project,
+    }
+
+
+def read_project_record() -> dict:
+    with PROJECT_STATE_LOCK:
+        return read_project_record_unlocked()
+
+
+def save_project_state(project, base_revision: int) -> dict:
+    validated = validate_project(project)
+    with PROJECT_STATE_LOCK:
+        current = read_project_record_unlocked()
+        if int(base_revision) != int(current["revision"]):
+            raise ProjectRevisionConflict(current)
+        record = {
+            "schemaVersion": 1,
+            "revision": int(current["revision"]) + 1,
+            "savedAt": now_iso(),
+            "project": validated,
+        }
+        write_json_atomic(PROJECT_STATE_PATH, record)
+    publish_project_event(record)
+    return record
+
+
+def sanitize_public_value(value):
+    if isinstance(value, list):
+        return [sanitize_public_value(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    blocked = {"path", "apiKey", "endpoint", "command", "args", "secret", "password", "token"}
+    clean = {}
+    for key, item in value.items():
+        if key in blocked or any(fragment in key.lower() for fragment in ("apikey", "accesskey", "secret", "password")):
+            continue
+        clean[key] = sanitize_public_value(item)
+    return clean
+
+
+def require_project_canvas(record: dict, canvas_id: str) -> tuple[dict, dict]:
+    project = record.get("project")
+    if not isinstance(project, dict):
+        raise UploadError(404, "画布项目不存在")
+    canvas = next(
+        (item for item in project.get("canvases", []) if isinstance(item, dict) and str(item.get("id")) == canvas_id),
+        None,
+    )
+    if not canvas:
+        raise UploadError(404, "画布不存在")
+    return project, canvas
+
+
+def find_canvas_node(canvas: dict, node_id: str) -> dict:
+    node = next(
+        (item for item in canvas.get("nodes", []) if isinstance(item, dict) and str(item.get("id")) == node_id),
+        None,
+    )
+    if not node:
+        raise UploadError(404, "节点不存在")
+    return node
+
+
+def pagination_values(query: dict[str, list[str]]) -> tuple[int, int]:
+    try:
+        cursor = max(0, int((query.get("cursor") or ["0"])[0] or 0))
+    except ValueError:
+        cursor = 0
+    try:
+        limit = max(1, min(50, int((query.get("limit") or ["20"])[0] or 20)))
+    except ValueError:
+        limit = 20
+    return cursor, limit
+
+
+def canvases_v2(query: dict[str, list[str]]) -> dict:
+    record = read_project_record()
+    project = record.get("project") or {}
+    canvases = []
+    for canvas in project.get("canvases", []) if isinstance(project, dict) else []:
+        if not isinstance(canvas, dict):
+            continue
+        canvases.append(
+            {
+                "id": str(canvas.get("id") or ""),
+                "name": str(canvas.get("name") or "未命名画布"),
+                "nodeCount": len(canvas.get("nodes") or []),
+                "edgeCount": len(canvas.get("edges") or []),
+                "updatedAt": str(canvas.get("updatedAt") or ""),
+                "active": str(project.get("activeCanvasId") or "") == str(canvas.get("id") or ""),
+            }
+        )
+    cursor, limit = pagination_values(query)
+    items = canvases[cursor : cursor + limit]
+    next_cursor = cursor + limit if cursor + limit < len(canvases) else None
+    return {
+        "projectId": str(project.get("id") or "") if isinstance(project, dict) else "",
+        "revision": int(record.get("revision") or 0),
+        "canvases": items,
+        "nextCursor": str(next_cursor) if next_cursor is not None else None,
+    }
+
+
+def canvas_v2(canvas_id: str, query: dict[str, list[str]]) -> dict:
+    record = read_project_record()
+    project, canvas = require_project_canvas(record, canvas_id)
+    cursor, limit = pagination_values(query)
+    nodes = canvas.get("nodes") if isinstance(canvas.get("nodes"), list) else []
+    page = nodes[cursor : cursor + limit]
+    next_cursor = cursor + limit if cursor + limit < len(nodes) else None
+    return {
+        "projectId": str(project.get("id") or ""),
+        "revision": int(record.get("revision") or 0),
+        "canvas": {
+            "id": canvas_id,
+            "name": str(canvas.get("name") or "未命名画布"),
+            "updatedAt": str(canvas.get("updatedAt") or ""),
+            "viewport": sanitize_public_value(canvas.get("viewport") or {}),
+            "edges": sanitize_public_value(canvas.get("edges") or []),
+            "groups": sanitize_public_value(canvas.get("groups") or []),
+        },
+        "nodes": sanitize_public_value(page),
+        "nextCursor": str(next_cursor) if next_cursor is not None else None,
+    }
+
+
+def search_canvas_nodes_v2(canvas_id: str, query: dict[str, list[str]]) -> dict:
+    record = read_project_record()
+    _, canvas = require_project_canvas(record, canvas_id)
+    needle = str((query.get("q") or [""])[0] or "").strip().lower()
+    kinds = {str(value) for value in query.get("kind", []) if str(value)}
+    matches = []
+    for node in canvas.get("nodes", []):
+        if not isinstance(node, dict):
+            continue
+        data = node.get("data") if isinstance(node.get("data"), dict) else {}
+        kind = str(data.get("kind") or "")
+        imported_media = data.get("importedMedia") if isinstance(data.get("importedMedia"), dict) else {}
+        outputs = data.get("outputs") if isinstance(data.get("outputs"), dict) else {}
+        references = data.get("references") if isinstance(data.get("references"), list) else []
+        haystack = " ".join(
+            [
+                *(str(data.get(key) or "") for key in ("title", "prompt", "model", "provider")),
+                str(imported_media.get("name") or ""),
+                str(outputs.get("assetName") or ""),
+                str(outputs.get("text") or ""),
+                *(str(reference.get("title") or "") for reference in references if isinstance(reference, dict)),
+            ]
+        ).lower()
+        if kinds and kind not in kinds:
+            continue
+        if needle and needle not in haystack:
+            continue
+        matches.append(node)
+    cursor, limit = pagination_values(query)
+    page = matches[cursor : cursor + limit]
+    next_cursor = cursor + limit if cursor + limit < len(matches) else None
+    return {
+        "canvasId": canvas_id,
+        "revision": int(record.get("revision") or 0),
+        "nodes": sanitize_public_value(page),
+        "nextCursor": str(next_cursor) if next_cursor is not None else None,
+    }
+
+
+def idempotency_lookup(key: str) -> dict | None:
+    payload = read_json_file(IDEMPOTENCY_PATH, {})
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get(key)
+    if not isinstance(value, dict):
+        return None
+    if isinstance(value.get("result"), dict):
+        return copy.deepcopy(value["result"])
+    # Compatibility with entries written before the cache envelope existed.
+    legacy = copy.deepcopy(value)
+    legacy.pop("idempotencySavedAt", None)
+    return legacy
+
+
+def idempotency_remember(key: str, result: dict) -> None:
+    payload = read_json_file(IDEMPOTENCY_PATH, {})
+    if not isinstance(payload, dict):
+        payload = {}
+    payload[key] = {"result": copy.deepcopy(result), "savedAt": now_iso()}
+    if len(payload) > 1000:
+        ordered = sorted(
+            payload.items(),
+            key=lambda item: str(item[1].get("savedAt") or item[1].get("idempotencySavedAt") or ""),
+        )
+        payload = dict(ordered[-800:])
+    write_json_atomic(IDEMPOTENCY_PATH, payload)
+
+
+def require_request_id(body: dict) -> str:
+    value = str(body.get("requestId") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9._:-]{8,128}", value):
+        raise UploadError(400, "requestId 格式无效")
+    return value
+
+
+def build_canvas_node(raw: dict) -> dict:
+    kind = str(raw.get("kind") or "").strip()
+    if kind not in ALLOWED_NODE_KINDS:
+        raise UploadError(400, "节点类型无效")
+    node_id = str(raw.get("id") or f"{kind}_{uuid.uuid4().hex[:12]}")
+    if not re.fullmatch(r"[A-Za-z0-9._:-]{1,160}", node_id):
+        raise UploadError(400, "节点 ID 无效")
+    title = str(raw.get("title") or kind).strip()[:200]
+    prompt = str(raw.get("prompt") or "")[:20_000]
+    position = raw.get("position") if isinstance(raw.get("position"), dict) else {}
+    try:
+        x, y = float(position.get("x") or 0), float(position.get("y") or 0)
+    except (TypeError, ValueError) as error:
+        raise UploadError(400, "节点位置无效") from error
+    provider_options = sanitize_options(kind, {"options": raw.get("providerOptions") or {}})
+    provider = str(raw.get("provider") or ("AnyCap" if kind in {"video", "audio"} else "Sub2API"))[:100]
+    model = route_model(kind, str(raw.get("model") or ""))[:200]
+    return {
+        "id": node_id,
+        "type": "studioNode",
+        "position": {"x": x, "y": y},
+        "width": 318 if kind == "video" else 286,
+        "height": 238 if kind == "video" else 220,
+        "data": {
+            "kind": kind,
+            "title": title or kind,
+            "prompt": prompt,
+            "status": "idle",
+            "progress": 0,
+            "provider": provider,
+            "model": model,
+            "inputs": [],
+            "outputs": {},
+            "references": [],
+            "providerOptions": provider_options,
+            "error": "",
+        },
+    }
+
+
+def apply_canvas_operations(canvas_id: str, body: dict) -> dict:
+    request_id = require_request_id(body)
+    key = f"operations:{canvas_id}:{request_id}"
+    with IDEMPOTENCY_LOCK:
+        cached = idempotency_lookup(key)
+        if cached:
+            return cached
+        operations = body.get("operations")
+        if not isinstance(operations, list) or not operations or len(operations) > MAX_COMMAND_OPERATIONS:
+            raise UploadError(400, f"operations 必须包含 1–{MAX_COMMAND_OPERATIONS} 项")
+        with PROJECT_STATE_LOCK:
+            current = read_project_record_unlocked()
+            try:
+                base_revision = int(body.get("baseRevision"))
+            except (TypeError, ValueError) as error:
+                raise UploadError(400, "baseRevision 无效") from error
+            if base_revision != int(current.get("revision") or 0):
+                raise ProjectRevisionConflict(current)
+            project = copy.deepcopy(current.get("project"))
+            if not isinstance(project, dict):
+                raise UploadError(404, "画布项目不存在")
+            _, canvas = require_project_canvas({"project": project}, canvas_id)
+            nodes = canvas.setdefault("nodes", [])
+            edges = canvas.setdefault("edges", [])
+            focus_node_id = ""
+            for operation in operations:
+                if not isinstance(operation, dict):
+                    raise UploadError(400, "operation 格式无效")
+                operation_type = str(operation.get("type") or "")
+                if operation_type == "rename_canvas":
+                    name = str(operation.get("name") or "").strip()[:120]
+                    if not name:
+                        raise UploadError(400, "画布名称不能为空")
+                    canvas["name"] = name
+                elif operation_type == "add_node":
+                    node = build_canvas_node(operation.get("node") if isinstance(operation.get("node"), dict) else {})
+                    if any(str(item.get("id")) == node["id"] for item in nodes if isinstance(item, dict)):
+                        raise UploadError(409, "节点 ID 已存在")
+                    nodes.append(node)
+                elif operation_type == "update_node":
+                    node = find_canvas_node(canvas, str(operation.get("nodeId") or ""))
+                    patch = operation.get("patch") if isinstance(operation.get("patch"), dict) else {}
+                    unknown = set(patch) - {"title", "prompt", "provider", "model", "providerOptions"}
+                    if unknown or not patch:
+                        raise UploadError(400, "节点 patch 包含不支持的字段")
+                    data = node.setdefault("data", {})
+                    if "title" in patch:
+                        title = str(patch.get("title") or "").strip()[:200]
+                        if not title:
+                            raise UploadError(400, "节点标题不能为空")
+                        data["title"] = title
+                    if "prompt" in patch:
+                        data["prompt"] = str(patch.get("prompt") or "")[:20_000]
+                    if "provider" in patch:
+                        data["provider"] = str(patch.get("provider") or "")[:100]
+                    if "model" in patch:
+                        data["model"] = str(patch.get("model") or "")[:200]
+                    if "providerOptions" in patch:
+                        data["providerOptions"] = sanitize_options(
+                            str(data.get("kind") or "text"), {"options": patch.get("providerOptions") or {}}
+                        )
+                elif operation_type == "move_node":
+                    node = find_canvas_node(canvas, str(operation.get("nodeId") or ""))
+                    position = operation.get("position") if isinstance(operation.get("position"), dict) else {}
+                    try:
+                        node["position"] = {"x": float(position["x"]), "y": float(position["y"])}
+                    except (KeyError, TypeError, ValueError) as error:
+                        raise UploadError(400, "节点位置无效") from error
+                elif operation_type == "add_edge":
+                    source = str(operation.get("sourceNodeId") or "")
+                    target = str(operation.get("targetNodeId") or "")
+                    if source == target:
+                        raise UploadError(400, "不能连接节点自身")
+                    find_canvas_node(canvas, source)
+                    find_canvas_node(canvas, target)
+                    if not any(str(edge.get("source")) == source and str(edge.get("target")) == target for edge in edges if isinstance(edge, dict)):
+                        edges.append({"id": f"edge_{uuid.uuid4().hex[:12]}", "source": source, "target": target, "type": "default"})
+                elif operation_type == "set_viewport":
+                    viewport = operation.get("viewport") if isinstance(operation.get("viewport"), dict) else {}
+                    try:
+                        zoom = float(viewport["zoom"])
+                        if zoom < 0.05 or zoom > 8:
+                            raise ValueError("zoom")
+                        canvas["viewport"] = {"x": float(viewport["x"]), "y": float(viewport["y"]), "zoom": zoom}
+                    except (KeyError, TypeError, ValueError) as error:
+                        raise UploadError(400, "viewport 无效") from error
+                elif operation_type == "focus_node":
+                    node = find_canvas_node(canvas, str(operation.get("nodeId") or ""))
+                    focus_node_id = str(node.get("id") or "")
+                    canvas["focusNodeId"] = focus_node_id
+                    canvas["focusRequestId"] = request_id
+                    canvas["focusRevision"] = int(current.get("revision") or 0) + 1
+                    project["activeCanvasId"] = canvas_id
+                else:
+                    raise UploadError(400, f"不支持的 operation：{operation_type}")
+            timestamp = now_iso()
+            canvas["updatedAt"] = timestamp
+            project["updatedAt"] = timestamp
+            record = {
+                "schemaVersion": 1,
+                "revision": int(current.get("revision") or 0) + 1,
+                "savedAt": timestamp,
+                "project": validate_project(project),
+            }
+            write_json_atomic(PROJECT_STATE_PATH, record)
+        result = {
+            "projectId": str(project.get("id") or ""),
+            "canvasId": canvas_id,
+            "revision": int(record["revision"]),
+            "savedAt": timestamp,
+            "requestId": request_id,
+            "applied": len(operations),
+        }
+        idempotency_remember(key, result)
+    event_details = {"canvasId": canvas_id, "requestId": request_id}
+    if focus_node_id:
+        event_details["focusNodeId"] = focus_node_id
+        event_details["focusRequestId"] = request_id
+    publish_project_event(record, "canvas.operations", event_details)
+    return result
 
 
 def send_json(handler: BaseHTTPRequestHandler, status: int, payload) -> None:
@@ -327,6 +874,7 @@ SEEDANCE_RATIOS = ["16:9", "3:4", "21:9", "9:16", "4:3", "1:1"]
 
 ANYCAP_VIDEO_CAPABILITIES = {
     "seedance-2-fast": {
+        "supportsGenerateAudio": True,
         "mode": "multi-modal-reference",
         "modes": ["multi-modal-reference", "image-to-video", "text-to-video"],
         "resolutions": ["480p", "720p"],
@@ -341,6 +889,7 @@ ANYCAP_VIDEO_CAPABILITIES = {
         },
     },
     "seedance-2": {
+        "supportsGenerateAudio": True,
         "mode": "multi-modal-reference",
         "modes": ["multi-modal-reference", "image-to-video", "text-to-video"],
         "resolutions": ["480p", "720p", "1080p", "4k"],
@@ -355,6 +904,7 @@ ANYCAP_VIDEO_CAPABILITIES = {
         },
     },
     "seedance-1.5-pro": {
+        "supportsGenerateAudio": True,
         "mode": "image-to-video",
         "modes": ["image-to-video", "text-to-video"],
         "resolutions": ["480p", "720p"],
@@ -368,6 +918,7 @@ ANYCAP_VIDEO_CAPABILITIES = {
         },
     },
     "kling-3.0": {
+        "supportsGenerateAudio": True,
         "mode": "multi-shot-video",
         "modes": ["multi-shot-video", "image-to-video", "text-to-video"],
         "resolutions": ["720p", "1080p", "4k"],
@@ -382,6 +933,7 @@ ANYCAP_VIDEO_CAPABILITIES = {
         },
     },
     "kling-3.0-omni": {
+        "supportsGenerateAudio": True,
         "mode": "multi-shot-video",
         "modes": ["multi-shot-video", "image-to-video", "text-to-video"],
         "resolutions": ["720p", "1080p"],
@@ -531,7 +1083,7 @@ def route_model(kind: str, requested: str) -> str:
     if kind == "video":
         return canonical_video_model(os.environ.get("ANYCAP_VIDEO_MODEL", "seedance-2-fast"))
     if kind == "audio":
-        return os.environ.get("ANYCAP_AUDIO_MODEL", "anycap-audio")
+        return os.environ.get("ANYCAP_AUDIO_MODEL", "doubao-seed-audio-1-0")
     if kind == "storyboard":
         return os.environ.get("SUB2API_STORYBOARD_MODEL", "gpt-5.5")
     return requested or "local-preview"
@@ -558,6 +1110,104 @@ def run_queue(command: str, *args: str, timeout: int = 12):
     if result.returncode != 0:
         raise RuntimeError(str(payload.get("error") or stderr or "后台任务不可用"))
     return payload
+
+
+def run_video_queue(command: str, *args: str, timeout: int = 12):
+    if not VIDEO_EDIT_QUEUE_SCRIPT.exists():
+        raise RuntimeError("视频剪辑队列脚本不存在")
+    result = subprocess.run(
+        ["node", str(VIDEO_EDIT_QUEUE_SCRIPT), command, *args],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+        env=os.environ.copy(),
+        check=False,
+    )
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
+    try:
+        payload = json.loads(stdout.splitlines()[-1]) if stdout else {}
+    except json.JSONDecodeError:
+        payload = {"error": stdout or stderr or "视频剪辑队列返回了不可解析的数据"}
+    if result.returncode != 0:
+        raise RuntimeError(str(payload.get("error") or stderr or "视频剪辑任务不可用"))
+    return payload
+
+
+def video_queue_available() -> tuple[bool, str]:
+    try:
+        health = run_video_queue("health", timeout=5)
+        if health.get("available"):
+            return True, ""
+        return False, "Redis 已连接，但 video edit worker 未启动"
+    except Exception as error:
+        return False, str(error)
+
+
+def local_output_path_from_url(url: str) -> Path | None:
+    if not url.startswith("/output/"):
+        return None
+    relative = unquote(url[len("/output/") :])
+    target = (output_dir() / relative).resolve()
+    if not is_inside_output(target) or not target.exists() or not target.is_file():
+        return None
+    return target
+
+
+def normalize_job_result(job: dict) -> dict:
+    clean = copy.deepcopy(job)
+    result = clean.get("result")
+    if not isinstance(result, dict):
+        return clean
+    result.pop("path", None)
+    candidate_url = str(result.get("fileUrl") or result.get("videoUrl") or result.get("imageUrl") or result.get("audioUrl") or "")
+    target = local_output_path_from_url(candidate_url)
+    if target:
+        media_type = MEDIA_TYPES.get(target.suffix.lower(), "other")
+        artifact = artifact_record_for_path(target, artifact_type=media_type)
+        result["artifact"] = artifact
+        result["fileUrl"] = artifact["previewUrl"]
+    return clean
+
+
+def get_any_job(job_id: str) -> dict:
+    runners = [run_video_queue, run_queue] if job_id.startswith("vedit_") else [run_queue, run_video_queue]
+    last_error: Exception | None = None
+    for runner in runners:
+        try:
+            return normalize_job_result(runner("get", job_id, timeout=8))
+        except Exception as error:
+            last_error = error
+            if "不存在" not in str(error):
+                break
+    raise RuntimeError(str(last_error or "任务不存在"))
+
+
+def list_all_jobs() -> list[dict]:
+    jobs: list[dict] = []
+    errors = []
+    for runner in (run_queue, run_video_queue):
+        try:
+            result = runner("list", timeout=8)
+            if isinstance(result, list):
+                jobs.extend(normalize_job_result(item) for item in result if isinstance(item, dict))
+        except Exception as error:
+            errors.append(str(error))
+    if not jobs and len(errors) == 2:
+        raise RuntimeError("；".join(errors))
+    jobs.sort(key=lambda item: str(item.get("createdAt") or ""), reverse=True)
+    return jobs[:160]
+
+
+def cancel_any_job(job_id: str) -> dict:
+    runner = run_video_queue if job_id.startswith("vedit_") else run_queue
+    result = runner("cancel", job_id, timeout=8)
+    status = str(result.get("status") or "") if isinstance(result, dict) else ""
+    if status == "canceled" or (isinstance(result, dict) and result.get("ok") is True and status != "canceling"):
+        project_managed_job({"id": job_id, "status": "canceled", "progress": 0, "error": "任务已取消"})
+        return {**result, "id": job_id, "status": "canceled"}
+    return result
 
 
 def queue_available() -> tuple[bool, str]:
@@ -597,6 +1247,13 @@ OPTION_ALLOWLIST = {
         "format",
         "multiShot",
         "shotCount",
+        "operation",
+        "audioPolicy",
+        "clips",
+        "editPlan",
+        "planOnly",
+        "transition",
+        "transitionDuration",
     },
     "audio": {
         "providerTool",
@@ -629,6 +1286,15 @@ def sanitize_options(kind: str, payload: dict) -> dict:
     clean = {}
     for key, value in raw.items():
         if isinstance(value, (str, int, float, bool)) and value is not None:
+            clean[key] = value
+        elif kind == "video" and key in {"clips", "editPlan"}:
+            encoded = json.dumps(value, ensure_ascii=False)
+            if len(encoded) > 160_000:
+                raise RuntimeError(f"视频参数 {key} 超过大小限制")
+            if key == "clips" and not isinstance(value, list):
+                raise RuntimeError("clips 必须是数组")
+            if key == "editPlan" and not isinstance(value, dict):
+                raise RuntimeError("editPlan 必须是对象")
             clean[key] = value
     return clean
 
@@ -721,6 +1387,10 @@ def normalize_video_options(model: str, options: dict) -> dict:
         clean["shotCount"] = max(1, min(12, shot_count))
     else:
         clean.pop("shotCount", None)
+    if capability.get("supportsGenerateAudio"):
+        clean["generateAudio"] = clean.get("generateAudio") if isinstance(clean.get("generateAudio"), bool) else True
+    else:
+        clean.pop("generateAudio", None)
     return clean
 
 
@@ -743,18 +1413,39 @@ def validate_video_references(model: str, references: list[dict], mode: str = ""
 
 
 def create_job(payload: dict):
-    available, reason = queue_available()
-    if not available:
-        raise RuntimeError(reason)
     kind = str(payload.get("kind") or "text")
     options = sanitize_options(kind, payload)
     references = sanitize_references(payload)
+    operation = str(options.get("operation") or "generate")
+    use_video_queue = kind == "video" and operation in {"ai-edit", "concat", "creative-edit"}
+    available, reason = video_queue_available() if use_video_queue else queue_available()
+    if not available:
+        raise RuntimeError(reason)
     requested_model = str(options.get("model") or payload.get("model") or "")
     provider_tool = str(options.get("providerTool") or "")
     model = route_model(kind, requested_model)
     if kind == "video":
-        options = normalize_video_options(model, options)
-        validate_video_references(model, references, str(options.get("mode") or ""))
+        if use_video_queue:
+            video_references = [reference for reference in references if reference.get("outputType") == "video"]
+            if len(video_references) != len(references):
+                raise RuntimeError("视频剪辑只支持引用视频素材")
+            minimum, maximum = (1, 3) if operation == "creative-edit" else (2, 20)
+            if len(video_references) < minimum or len(video_references) > maximum:
+                raise RuntimeError(f"{operation} 需要 {minimum}–{maximum} 个视频素材")
+            options["operation"] = operation
+            options["transition"] = options.get("transition") if options.get("transition") in {"cut", "crossfade"} else "cut"
+            options["audioPolicy"] = (
+                options.get("audioPolicy")
+                if options.get("audioPolicy") in {"keep", "preserve", "mute", "normalize"}
+                else "keep"
+            )
+            if operation == "creative-edit":
+                model = canonical_video_model(requested_model or "gemini-omni-flash-preview")
+            elif not requested_model:
+                model = "selfcanvas-smart-edit"
+        else:
+            options = normalize_video_options(model, options)
+            validate_video_references(model, references, str(options.get("mode") or ""))
     if kind == "storyboard":
         options = normalize_storyboard_options(options)
         for reference in references:
@@ -762,12 +1453,12 @@ def create_job(payload: dict):
                 raise RuntimeError(f"引用的文本节点“{reference.get('title') or '未命名'}”尚未生成正文")
     created_at = now_iso()
     job = {
-        "id": f"job_{uuid.uuid4().hex[:14]}",
+        "id": f"{'vedit' if use_video_queue else 'job'}_{uuid.uuid4().hex[:14]}",
         "nodeId": str(payload.get("nodeId") or ""),
         "targetNodeId": str(payload.get("targetNodeId") or payload.get("nodeId") or ""),
         "kind": kind,
         "title": str(payload.get("title") or kind),
-        "provider": route_provider(kind, str(payload.get("provider") or ""), provider_tool),
+        "provider": "SelfCanvas AI Edit" if use_video_queue else route_provider(kind, str(payload.get("provider") or ""), provider_tool),
         "model": model,
         "status": "queued",
         "progress": 0,
@@ -783,9 +1474,563 @@ def create_job(payload: dict):
         json.dump(job, temp, ensure_ascii=False)
         temp_path = temp.name
     try:
-        return run_queue("enqueue", temp_path, timeout=12)
+        return (run_video_queue if use_video_queue else run_queue)("enqueue", temp_path, timeout=12)
     finally:
         Path(temp_path).unlink(missing_ok=True)
+
+
+def node_generation_payload(node: dict) -> dict:
+    data = node.get("data") if isinstance(node.get("data"), dict) else {}
+    return {
+        "nodeId": str(node.get("id") or ""),
+        "targetNodeId": str(node.get("id") or ""),
+        "kind": str(data.get("kind") or "text"),
+        "title": str(data.get("title") or data.get("kind") or "节点"),
+        "prompt": str(data.get("prompt") or ""),
+        "provider": str(data.get("provider") or ""),
+        "model": str(data.get("model") or ""),
+        "inputs": data.get("inputs") if isinstance(data.get("inputs"), list) else [],
+        "references": data.get("references") if isinstance(data.get("references"), list) else [],
+        "options": data.get("providerOptions") if isinstance(data.get("providerOptions"), dict) else {},
+    }
+
+
+def track_managed_job(job: dict, canvas_id: str, node_id: str) -> None:
+    job_id = str(job.get("id") or "")
+    if not job_id:
+        return
+    with MANAGED_JOBS_LOCK:
+        jobs = read_json_file(MANAGED_JOBS_PATH, {})
+        if not isinstance(jobs, dict):
+            jobs = {}
+        jobs[job_id] = {
+            "jobId": job_id,
+            "canvasId": canvas_id,
+            "nodeId": node_id,
+            "createdAt": now_iso(),
+        }
+        write_json_atomic(MANAGED_JOBS_PATH, jobs)
+
+
+def remove_managed_job(job_id: str) -> None:
+    with MANAGED_JOBS_LOCK:
+        jobs = read_json_file(MANAGED_JOBS_PATH, {})
+        if not isinstance(jobs, dict) or job_id not in jobs:
+            return
+        jobs.pop(job_id, None)
+        write_json_atomic(MANAGED_JOBS_PATH, jobs)
+
+
+def project_managed_job(job: dict) -> bool:
+    job_id = str(job.get("id") or "")
+    if not job_id or job.get("status") not in {"success", "error", "canceled"}:
+        return False
+    with MANAGED_JOBS_LOCK:
+        jobs = read_json_file(MANAGED_JOBS_PATH, {})
+        tracked = jobs.get(job_id) if isinstance(jobs, dict) else None
+    if not isinstance(tracked, dict):
+        return False
+    updated_record = None
+    with PROJECT_STATE_LOCK:
+        current = read_project_record_unlocked()
+        project = copy.deepcopy(current.get("project"))
+        if not isinstance(project, dict):
+            remove_managed_job(job_id)
+            return False
+        try:
+            _, canvas = require_project_canvas({"project": project}, str(tracked.get("canvasId") or ""))
+            node = find_canvas_node(canvas, str(tracked.get("nodeId") or ""))
+        except UploadError:
+            remove_managed_job(job_id)
+            return False
+        data = node.get("data") if isinstance(node.get("data"), dict) else {}
+        if str(data.get("lastJobId") or "") != job_id:
+            remove_managed_job(job_id)
+            return False
+        if job.get("status") == "success":
+            data.update({"status": "success", "progress": 100, "outputs": job.get("result") or {}, "error": ""})
+        else:
+            data.update(
+                {
+                    "status": "error",
+                    "progress": 0,
+                    "error": str(job.get("error") or ("任务已取消" if job.get("status") == "canceled" else "任务失败")),
+                }
+            )
+        timestamp = now_iso()
+        canvas["updatedAt"] = timestamp
+        project["updatedAt"] = timestamp
+        updated_record = {
+            "schemaVersion": 1,
+            "revision": int(current.get("revision") or 0) + 1,
+            "savedAt": timestamp,
+            "project": validate_project(project),
+        }
+        write_json_atomic(PROJECT_STATE_PATH, updated_record)
+    remove_managed_job(job_id)
+    publish_project_event(
+        updated_record,
+        "job.completed" if job.get("status") == "success" else "job.failed",
+        {"jobId": job_id, "canvasId": tracked.get("canvasId"), "nodeId": tracked.get("nodeId")},
+    )
+    return True
+
+
+def managed_job_projector_loop() -> None:
+    cursor = 0
+    while True:
+        try:
+            with MANAGED_JOBS_LOCK:
+                jobs = read_json_file(MANAGED_JOBS_PATH, {})
+                job_items = list(jobs.items()) if isinstance(jobs, dict) else []
+            if job_items:
+                start = cursor % len(job_items)
+                batch_size = min(100, len(job_items))
+                batch = [job_items[(start + index) % len(job_items)] for index in range(batch_size)]
+                cursor = (start + batch_size) % len(job_items)
+            else:
+                batch = []
+                cursor = 0
+            for job_id, tracked in batch:
+                try:
+                    job = get_any_job(str(job_id))
+                    project_managed_job(job)
+                except Exception as error:
+                    if "不存在" not in str(error) or not isinstance(tracked, dict):
+                        continue
+                    try:
+                        created_at = datetime.fromisoformat(str(tracked.get("createdAt") or "").replace("Z", "+00:00"))
+                        age_seconds = max(0, (datetime.now(timezone.utc) - created_at.astimezone(timezone.utc)).total_seconds())
+                    except (TypeError, ValueError):
+                        age_seconds = float("inf")
+                    grace = bounded_env_int("SELF_CANVAS_MISSING_JOB_GRACE_SECONDS", 600, 60, 86_400)
+                    if age_seconds >= grace:
+                        project_managed_job(
+                            {
+                                "id": str(job_id),
+                                "status": "error",
+                                "progress": 0,
+                                "error": "后台任务记录已失效，请重新生成",
+                            }
+                        )
+                    continue
+        except Exception as error:
+            print(f"[server] managed job projector: {error}")
+        time.sleep(1.5)
+
+
+def start_saved_node_job(canvas_id: str, node_id: str, body: dict) -> dict:
+    request_id = require_request_id(body)
+    key = f"run:{canvas_id}:{node_id}:{request_id}"
+    with IDEMPOTENCY_LOCK:
+        cached = idempotency_lookup(key)
+        if cached:
+            return cached
+        with PROJECT_STATE_LOCK:
+            current = read_project_record_unlocked()
+            try:
+                base_revision = int(body.get("baseRevision"))
+            except (TypeError, ValueError) as error:
+                raise UploadError(400, "baseRevision 无效") from error
+            if base_revision != int(current.get("revision") or 0):
+                raise ProjectRevisionConflict(current)
+            project = copy.deepcopy(current.get("project"))
+            if not isinstance(project, dict):
+                raise UploadError(404, "画布项目不存在")
+            _, canvas = require_project_canvas({"project": project}, canvas_id)
+            node = find_canvas_node(canvas, node_id)
+            job = create_job(node_generation_payload(node))
+            data = node.setdefault("data", {})
+            data.update(
+                {
+                    "status": "running",
+                    "progress": max(3, int(job.get("progress") or 0)),
+                    "lastJobId": str(job.get("id") or ""),
+                    "outputs": {},
+                    "error": "",
+                }
+            )
+            timestamp = now_iso()
+            canvas["updatedAt"] = timestamp
+            project["updatedAt"] = timestamp
+            record = {
+                "schemaVersion": 1,
+                "revision": int(current.get("revision") or 0) + 1,
+                "savedAt": timestamp,
+                "project": validate_project(project),
+            }
+            write_json_atomic(PROJECT_STATE_PATH, record)
+        track_managed_job(job, canvas_id, node_id)
+        result = {
+            "projectId": str(project.get("id") or ""),
+            "canvasId": canvas_id,
+            "nodeId": node_id,
+            "revision": int(record["revision"]),
+            "requestId": request_id,
+            "job": normalize_job_result(job),
+        }
+        idempotency_remember(key, result)
+    publish_project_event(record, "node.run", {"canvasId": canvas_id, "nodeId": node_id, "jobId": job.get("id")})
+    return result
+
+
+def canvas_node_video_reference(node: dict) -> dict:
+    data = node.get("data") if isinstance(node.get("data"), dict) else {}
+    outputs = data.get("outputs") if isinstance(data.get("outputs"), dict) else {}
+    imported = data.get("importedMedia") if isinstance(data.get("importedMedia"), dict) else {}
+    url = str(outputs.get("videoUrl") or outputs.get("fileUrl") or imported.get("url") or "")
+    if not url or not local_output_path_from_url(url):
+        raise UploadError(400, f"节点“{data.get('title') or node.get('id')}”没有已落盘的视频")
+    return {
+        "nodeId": str(node.get("id") or ""),
+        "title": str(data.get("title") or "视频"),
+        "kind": "video",
+        "outputType": "video",
+        "source": "canvas",
+        "url": url,
+        "thumbnailUrl": url,
+    }
+
+
+def create_video_edit_job(canvas_id: str, body: dict) -> dict:
+    request_id = require_request_id(body)
+    key = f"video-edit:{canvas_id}:{request_id}"
+    with IDEMPOTENCY_LOCK:
+        cached = idempotency_lookup(key)
+        if cached:
+            return cached
+        mode_map = {"ai_edit": "ai-edit", "merge": "concat", "creative": "creative-edit"}
+        operation = mode_map.get(str(body.get("mode") or ""))
+        if not operation:
+            raise UploadError(400, "视频剪辑模式无效")
+        source_ids = [str(value) for value in body.get("sourceNodeIds", []) if str(value)] if isinstance(body.get("sourceNodeIds"), list) else []
+        if len(set(source_ids)) != len(source_ids):
+            raise UploadError(400, "sourceNodeIds 不可重复")
+        minimum, maximum = (1, 3) if operation == "creative-edit" else (2, 20)
+        if len(source_ids) < minimum or len(source_ids) > maximum:
+            raise UploadError(400, f"当前模式需要 {minimum}–{maximum} 段视频")
+        with PROJECT_STATE_LOCK:
+            current = read_project_record_unlocked()
+            try:
+                base_revision = int(body.get("baseRevision"))
+            except (TypeError, ValueError) as error:
+                raise UploadError(400, "baseRevision 无效") from error
+            if base_revision != int(current.get("revision") or 0):
+                raise ProjectRevisionConflict(current)
+            project = copy.deepcopy(current.get("project"))
+            if not isinstance(project, dict):
+                raise UploadError(404, "画布项目不存在")
+            _, canvas = require_project_canvas({"project": project}, canvas_id)
+            sources = [find_canvas_node(canvas, node_id) for node_id in source_ids]
+            references = [canvas_node_video_reference(node) for node in sources]
+            target_id = str(body.get("targetNodeId") or "")
+            if target_id:
+                target_node = find_canvas_node(canvas, target_id)
+                if str(target_node.get("data", {}).get("kind") or "") != "video":
+                    raise UploadError(400, "目标节点必须是视频节点")
+            else:
+                max_x = max((float(node.get("position", {}).get("x") or 0) for node in sources), default=120)
+                max_y = max((float(node.get("position", {}).get("y") or 0) for node in sources), default=120)
+                target_node = build_canvas_node(
+                    {
+                        "kind": "video",
+                        "title": "视频",
+                        "prompt": str(body.get("prompt") or ""),
+                        "position": {"x": max_x + 380, "y": max_y},
+                        "provider": "SelfCanvas AI Edit",
+                        "model": "gemini-omni-flash-preview" if operation == "creative-edit" else "selfcanvas-smart-edit",
+                    }
+                )
+                canvas.setdefault("nodes", []).append(target_node)
+                target_id = str(target_node.get("id") or "")
+            data = target_node.setdefault("data", {})
+            output = body.get("output") if isinstance(body.get("output"), dict) else {}
+            options = {
+                "providerTool": "anycap" if operation == "creative-edit" else "local-edit",
+                "model": "gemini-omni-flash-preview" if operation == "creative-edit" else "selfcanvas-smart-edit",
+                "operation": operation,
+                "transition": str(body.get("transition") or "cut"),
+                "audioPolicy": "keep" if str(body.get("audioPolicy") or "preserve") == "preserve" else str(body.get("audioPolicy")),
+                "format": "mp4",
+            }
+            for key_name in ("resolution", "aspectRatio", "fps", "format"):
+                value = output.get(key_name)
+                if isinstance(value, (str, int, float, bool)):
+                    options[key_name] = value
+            data.update(
+                {
+                    "kind": "video",
+                    "title": str(data.get("title") or "视频"),
+                    "prompt": str(body.get("prompt") or data.get("prompt") or "")[:20_000],
+                    "provider": "SelfCanvas AI Edit",
+                    "model": options["model"],
+                    "references": references,
+                    "providerOptions": options,
+                }
+            )
+            job = create_job(node_generation_payload(target_node))
+            data.update(
+                {
+                    "status": "running",
+                    "progress": max(3, int(job.get("progress") or 0)),
+                    "lastJobId": str(job.get("id") or ""),
+                    "outputs": {},
+                    "error": "",
+                }
+            )
+            timestamp = now_iso()
+            canvas["updatedAt"] = timestamp
+            project["updatedAt"] = timestamp
+            record = {
+                "schemaVersion": 1,
+                "revision": int(current.get("revision") or 0) + 1,
+                "savedAt": timestamp,
+                "project": validate_project(project),
+            }
+            write_json_atomic(PROJECT_STATE_PATH, record)
+        track_managed_job(job, canvas_id, target_id)
+        result = {
+            "projectId": str(project.get("id") or ""),
+            "canvasId": canvas_id,
+            "nodeId": target_id,
+            "revision": int(record["revision"]),
+            "requestId": request_id,
+            "job": normalize_job_result(job),
+        }
+        idempotency_remember(key, result)
+    publish_project_event(record, "video-edit.created", {"canvasId": canvas_id, "nodeId": target_id, "jobId": job.get("id")})
+    return result
+
+
+def canvas_artifact_records(canvas: dict, node_id: str = "") -> list[dict]:
+    nodes = canvas.get("nodes") if isinstance(canvas.get("nodes"), list) else []
+    if node_id:
+        nodes = [find_canvas_node(canvas, node_id)]
+    artifacts: list[dict] = []
+    seen: set[str] = set()
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        data = node.get("data") if isinstance(node.get("data"), dict) else {}
+        outputs = data.get("outputs") if isinstance(data.get("outputs"), dict) else {}
+        imported = data.get("importedMedia") if isinstance(data.get("importedMedia"), dict) else {}
+        output_artifact = outputs.get("artifact") if isinstance(outputs.get("artifact"), dict) else {}
+        imported_artifact = imported.get("artifact") if isinstance(imported.get("artifact"), dict) else {}
+        artifact_ids = [output_artifact.get("id"), imported_artifact.get("id"), imported.get("id")]
+        urls = [
+            outputs.get("fileUrl"),
+            outputs.get("videoUrl"),
+            outputs.get("imageUrl"),
+            outputs.get("audioUrl"),
+            output_artifact.get("previewUrl"),
+            imported.get("url"),
+            imported.get("previewUrl"),
+            imported_artifact.get("previewUrl"),
+        ]
+        targets: list[Path] = []
+        for artifact_id in artifact_ids:
+            candidate = str(artifact_id or "").strip()
+            if not candidate or len(candidate) > 4096:
+                continue
+            try:
+                targets.append(output_target_from_artifact_id(candidate))
+            except UploadError:
+                continue
+        for raw_url in urls:
+            target = local_output_path_from_url(str(raw_url or ""))
+            if target:
+                targets.append(target)
+        for target in targets:
+            artifact = artifact_record_for_path(target)
+            artifact_id = str(artifact.get("id") or "")
+            if not artifact_id or artifact_id in seen:
+                continue
+            seen.add(artifact_id)
+            artifacts.append({**artifact, "artifactId": artifact["id"], "nodeId": str(node.get("id") or "")})
+    return artifacts
+
+
+def list_canvas_artifacts_v2(canvas_id: str, query: dict[str, list[str]]) -> dict:
+    record = read_project_record()
+    _, canvas = require_project_canvas(record, canvas_id)
+    node_id = str((query.get("nodeId") or [""])[0] or "")
+    types = {str(value) for value in query.get("type", []) if str(value)}
+    artifacts = [
+        artifact
+        for artifact in canvas_artifact_records(canvas, node_id)
+        if not types or str(artifact.get("type")) in types
+    ]
+    artifacts.sort(key=lambda item: str(item.get("createdAt") or ""), reverse=True)
+    cursor, limit = pagination_values(query)
+    page = artifacts[cursor : cursor + limit]
+    next_cursor = cursor + limit if cursor + limit < len(artifacts) else None
+    return {
+        "canvasId": canvas_id,
+        "revision": int(record.get("revision") or 0),
+        "artifacts": page,
+        "nextCursor": str(next_cursor) if next_cursor is not None else None,
+    }
+
+
+def prepare_download_v2(body: dict) -> dict:
+    request_id = require_request_id(body)
+    canvas_id = str(body.get("canvasId") or "")
+    _, canvas = require_project_canvas(read_project_record(), canvas_id)
+    artifact_ids = body.get("artifactIds") if isinstance(body.get("artifactIds"), list) else []
+    artifact_ids = list(dict.fromkeys(str(value) for value in artifact_ids if str(value)))
+    if not artifact_ids or len(artifact_ids) > 100:
+        raise UploadError(400, "artifactIds 必须包含 1–100 个文件")
+    allowed_ids = {str(item.get("id") or "") for item in canvas_artifact_records(canvas)}
+    if any(artifact_id not in allowed_ids for artifact_id in artifact_ids):
+        raise UploadError(403, "只能下载该画布中已落盘的产物")
+    key = f"download:{canvas_id}:{request_id}"
+    with IDEMPOTENCY_LOCK:
+        cached = idempotency_lookup(key)
+        if cached:
+            return cached
+        if len(artifact_ids) == 1:
+            artifact = artifact_record_for_path(output_target_from_artifact_id(artifact_ids[0]))
+            result = {"requestId": request_id, "status": "ready", "artifact": artifact, "downloadUrl": artifact["downloadUrl"]}
+        else:
+            result = {
+                "requestId": request_id,
+                **create_export_job({"fileIds": artifact_ids, "archiveName": body.get("archiveName")}),
+            }
+        idempotency_remember(key, result)
+        return result
+
+
+def get_job_v2(job_id: str) -> dict:
+    if job_id.startswith("export_"):
+        return get_export_job(job_id)
+    job = get_any_job(job_id)
+    project_managed_job(job)
+    return job
+
+
+def configured_allowed_origins() -> set[str]:
+    configured = os.environ.get("SELF_CANVAS_ALLOWED_ORIGINS", "").strip()
+    return {item.strip().rstrip("/") for item in configured.split(",") if item.strip()}
+
+
+def browser_request_origin_allowed(handler: BaseHTTPRequestHandler) -> bool:
+    fetch_site = str(handler.headers.get("Sec-Fetch-Site") or "").lower()
+    if fetch_site and fetch_site not in {"same-origin", "same-site", "none"}:
+        return False
+    origin = str(handler.headers.get("Origin") or "").strip().rstrip("/")
+    if not origin:
+        return True
+    if origin in configured_allowed_origins():
+        return True
+    try:
+        origin_host = urlparse(origin).netloc.lower()
+    except ValueError:
+        return False
+    request_hosts = {
+        str(handler.headers.get("Host") or "").strip().lower(),
+        str(handler.headers.get("X-Forwarded-Host") or "").strip().lower(),
+    }
+    return bool(origin_host and origin_host in request_hosts)
+
+
+def prune_browser_sessions(timestamp: float | None = None) -> None:
+    current = timestamp if timestamp is not None else time.time()
+    expired = [key for key, value in BROWSER_SESSIONS.items() if float(value.get("expiresAt") or 0) <= current]
+    for key in expired:
+        BROWSER_SESSIONS.pop(key, None)
+    if len(BROWSER_SESSIONS) > 512:
+        ordered = sorted(BROWSER_SESSIONS.items(), key=lambda item: float(item[1].get("expiresAt") or 0))
+        for key, _ in ordered[: len(BROWSER_SESSIONS) - 512]:
+            BROWSER_SESSIONS.pop(key, None)
+
+
+def browser_cookie_session_id(handler: BaseHTTPRequestHandler) -> str:
+    raw_cookie = str(handler.headers.get("Cookie") or "")
+    if not raw_cookie:
+        return ""
+    try:
+        cookies = SimpleCookie()
+        cookies.load(raw_cookie)
+        morsel = cookies.get(BROWSER_SESSION_COOKIE)
+        return morsel.value if morsel else ""
+    except Exception:
+        return ""
+
+
+def create_browser_session(handler: BaseHTTPRequestHandler) -> None:
+    if not browser_request_origin_allowed(handler):
+        raise UploadError(403, "浏览器来源不受信任")
+    expires_at = time.time() + BROWSER_SESSION_TTL_SECONDS
+    with BROWSER_SESSIONS_LOCK:
+        prune_browser_sessions()
+        session_id = browser_cookie_session_id(handler)
+        session = BROWSER_SESSIONS.get(session_id) if session_id else None
+        if session:
+            csrf_token = str(session.get("csrfToken") or "")
+            session["expiresAt"] = expires_at
+        else:
+            session_id = secrets.token_urlsafe(32)
+            csrf_token = secrets.token_urlsafe(32)
+            BROWSER_SESSIONS[session_id] = {"csrfToken": csrf_token, "expiresAt": expires_at}
+    payload = {
+        "csrfToken": csrf_token,
+        "expiresAt": datetime.fromtimestamp(expires_at, timezone.utc).isoformat(),
+    }
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    cookie = (
+        f"{BROWSER_SESSION_COOKIE}={session_id}; HttpOnly; SameSite=Strict; "
+        f"Path=/; Max-Age={BROWSER_SESSION_TTL_SECONDS}"
+    )
+    forwarded_proto = str(handler.headers.get("X-Forwarded-Proto") or "").lower()
+    if forwarded_proto == "https":
+        cookie += "; Secure"
+    handler.send_response(200)
+    handler.send_header("Content-Type", "application/json; charset=utf-8")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.send_header("Cache-Control", "no-store")
+    handler.send_header("Set-Cookie", cookie)
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def browser_session_valid(handler: BaseHTTPRequestHandler) -> bool:
+    if not browser_request_origin_allowed(handler):
+        return False
+    csrf_token = str(handler.headers.get("X-SelfCanvas-CSRF") or "").strip()
+    if not csrf_token:
+        return False
+    session_id = browser_cookie_session_id(handler)
+    if not session_id:
+        return False
+    with BROWSER_SESSIONS_LOCK:
+        prune_browser_sessions()
+        session = BROWSER_SESSIONS.get(session_id)
+        if not session:
+            return False
+        expected_csrf = str(session.get("csrfToken") or "")
+        if not expected_csrf or not hmac.compare_digest(csrf_token, expected_csrf):
+            return False
+        session["expiresAt"] = time.time() + BROWSER_SESSION_TTL_SECONDS
+    return True
+
+
+def bearer_api_token_valid(handler: BaseHTTPRequestHandler) -> bool:
+    expected = os.environ.get("SELF_CANVAS_API_TOKEN", "").strip()
+    authorization = str(handler.headers.get("Authorization") or "")
+    token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+    return bool(expected and token and hmac.compare_digest(token, expected))
+
+
+def require_v2_api_token(handler: BaseHTTPRequestHandler) -> None:
+    if bearer_api_token_valid(handler) or browser_session_valid(handler):
+        return
+    raise UploadError(401, "未授权访问 SelfCanvas API")
+
+
+def require_write_access(handler: BaseHTTPRequestHandler) -> None:
+    if bearer_api_token_valid(handler) or browser_session_valid(handler):
+        return
+    raise UploadError(401, "未授权写入 SelfCanvas")
 
 
 MEDIA_TYPES = {
@@ -794,7 +2039,6 @@ MEDIA_TYPES = {
     ".jpeg": "image",
     ".webp": "image",
     ".gif": "image",
-    ".svg": "image",
     ".avif": "image",
     ".mp4": "video",
     ".webm": "video",
@@ -806,6 +2050,7 @@ MEDIA_TYPES = {
     ".aac": "audio",
     ".ogg": "audio",
     ".flac": "audio",
+    ".zip": "other",
 }
 
 UPLOAD_CHUNK_SIZE = 1024 * 1024
@@ -830,13 +2075,15 @@ def safe_upload_name(encoded_name: str) -> tuple[str, str]:
     original = Path(unquote(encoded_name or "").replace("\\", "/")).name.strip()
     if not original:
         raise UploadError(400, "缺少有效文件名")
-    suffix = Path(original).suffix.lower()
+    display_name = re.sub(r"[\x00-\x1f\x7f]+", "_", original).strip(" .")
+    suffix = Path(display_name).suffix.lower()
     if suffix not in MEDIA_TYPES:
         raise UploadError(415, f"不支持的媒体格式：{suffix or '无扩展名'}")
-    stem = Path(original).stem
-    cleaned_stem = "".join(char if char.isalnum() or char in "._- " else "_" for char in stem)
-    cleaned_stem = re.sub(r"\s+", "_", cleaned_stem).strip("._-") or "media"
-    return original, f"{cleaned_stem[:120]}{suffix}"
+    stem = Path(display_name).stem.strip(" .") or "media"
+    while len(f"{stem}{suffix}".encode("utf-8")) > 220 and stem:
+        stem = stem[:-1]
+    storage_name = f"{stem or 'media'}{suffix}"
+    return display_name, storage_name
 
 
 def output_display_title(path: Path) -> str:
@@ -847,6 +2094,30 @@ def output_display_title(path: Path) -> str:
     if len(prefix) == 32 and all(char in "0123456789abcdef" for char in prefix.lower()):
         return display
     return stem
+
+
+def artifact_record_for_path(path: Path, *, artifact_type: str | None = None, title: str | None = None) -> dict:
+    target = path.resolve()
+    if not is_inside_output(target) or not target.exists() or not target.is_file():
+        raise UploadError(404, "文件不存在")
+    relative = target.relative_to(output_dir().resolve()).as_posix()
+    media_type = artifact_type or MEDIA_TYPES.get(target.suffix.lower(), "other")
+    mime_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+    artifact_id = artifact_id_for_relative(relative)
+    preview_url = f"/output/{quote(relative)}"
+    download_url = f"/api/files/download/{quote(artifact_id)}"
+    return {
+        "id": artifact_id,
+        "name": target.name,
+        "title": title or output_display_title(target),
+        "type": media_type,
+        "mimeType": mime_type,
+        "size": target.stat().st_size,
+        "previewUrl": preview_url,
+        "downloadUrl": download_url,
+        "url": preview_url,
+        "createdAt": datetime.fromtimestamp(target.stat().st_mtime, timezone.utc).isoformat(),
+    }
 
 
 def receive_media_upload(handler: BaseHTTPRequestHandler) -> dict:
@@ -863,11 +2134,12 @@ def receive_media_upload(handler: BaseHTTPRequestHandler) -> dict:
 
     original_name, safe_name = safe_upload_name(handler.headers.get("X-File-Name") or "")
     media_type = MEDIA_TYPES[Path(safe_name).suffix.lower()]
-    upload_dir = output_dir() / "uploads" / datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    upload_dir.mkdir(parents=True, exist_ok=True)
+    upload_root = output_dir() / "uploads" / datetime.now(timezone.utc).strftime("%Y-%m-%d")
     token = uuid.uuid4().hex
-    target = upload_dir / f"{token}--{safe_name}"
-    temporary = upload_dir / f".{token}.part"
+    upload_dir = upload_root / token
+    upload_dir.mkdir(parents=True, exist_ok=False)
+    target = upload_dir / safe_name
+    temporary = upload_dir / ".upload.part"
     remaining = content_length
 
     try:
@@ -881,20 +2153,23 @@ def receive_media_upload(handler: BaseHTTPRequestHandler) -> dict:
         os.replace(temporary, target)
     except Exception:
         temporary.unlink(missing_ok=True)
+        try:
+            upload_dir.rmdir()
+        except OSError:
+            pass
         raise
 
     rel = target.relative_to(output_dir()).as_posix()
     requested_mime = (handler.headers.get("Content-Type") or "").split(";", 1)[0].strip()
     guessed_mime = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
     mime_type = requested_mime if requested_mime.startswith(f"{media_type}/") else guessed_mime
+    artifact = artifact_record_for_path(target, artifact_type=media_type, title=original_name)
     return {
-        "id": rel,
+        **artifact,
         "name": original_name,
         "type": media_type,
         "mimeType": mime_type,
-        "size": target.stat().st_size,
-        "url": f"/output/{quote(rel)}",
-        "path": str(target),
+        "artifact": artifact,
     }
 
 
@@ -906,23 +2181,142 @@ def list_output_files():
     for path in base.rglob("*"):
         if not path.is_file():
             continue
+        relative = path.relative_to(base)
+        if any(part.startswith(".") for part in relative.parts):
+            continue
         media_type = MEDIA_TYPES.get(path.suffix.lower(), "other")
         if media_type == "other":
             continue
-        rel = path.relative_to(base).as_posix()
-        stat = path.stat()
-        files.append(
-            {
-                "id": rel,
-                "title": output_display_title(path),
-                "type": media_type,
-                "url": f"/output/{quote(rel)}",
-                "path": str(path),
-                "size": stat.st_size,
-                "createdAt": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
-            }
-        )
+        files.append(artifact_record_for_path(path, artifact_type=media_type))
     return sorted(files, key=lambda item: item["createdAt"], reverse=True)
+
+
+def export_job_payload(job: dict) -> dict:
+    return copy.deepcopy(job)
+
+
+def export_size_limit_bytes() -> int:
+    return bounded_env_int("SELF_CANVAS_MAX_EXPORT_GB", 8, 1, 100) * 1024 * 1024 * 1024
+
+
+def ensure_export_capacity(targets: list[Path]) -> int:
+    total_bytes = sum(target.stat().st_size for target in targets)
+    maximum = export_size_limit_bytes()
+    if total_bytes > maximum:
+        raise UploadError(413, f"打包源文件总大小不能超过 {maximum // (1024 * 1024 * 1024)} GB")
+    disk = shutil.disk_usage(output_dir())
+    reserve = bounded_env_int("SELF_CANVAS_MIN_FREE_GB", 1, 0, 100) * 1024 * 1024 * 1024
+    overhead = max(64 * 1024 * 1024, total_bytes // 20)
+    if disk.free < total_bytes + overhead + reserve:
+        raise UploadError(507, "输出磁盘空间不足，无法安全创建 ZIP")
+    return total_bytes
+
+
+def run_export_job(export_id: str, artifact_ids: list[str], archive_name: str) -> None:
+    with EXPORT_JOBS_LOCK:
+        if export_id not in EXPORT_JOBS:
+            return
+        EXPORT_JOBS[export_id].update({"status": "running", "progress": 5, "updatedAt": now_iso()})
+    try:
+        targets = [output_target_from_artifact_id(artifact_id) for artifact_id in artifact_ids]
+        ensure_export_capacity(targets)
+        export_dir = output_dir() / "exports" / export_id
+        export_dir.mkdir(parents=True, exist_ok=True)
+        target = export_dir / archive_name
+        temporary = target.with_suffix(".zip.part")
+        used_names: dict[str, int] = {}
+        try:
+            # Generated images/video/audio are already compressed. Storing them
+            # avoids wasting CPU and makes required disk space predictable.
+            with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_STORED) as archive:
+                for index, source in enumerate(targets):
+                    base_name = source.name
+                    seen = used_names.get(base_name, 0)
+                    used_names[base_name] = seen + 1
+                    archive_name = base_name if seen == 0 else f"{source.stem}-{seen + 1}{source.suffix}"
+                    archive.write(source, arcname=archive_name)
+                    with EXPORT_JOBS_LOCK:
+                        if export_id in EXPORT_JOBS:
+                            EXPORT_JOBS[export_id]["progress"] = min(94, 10 + round(((index + 1) / len(targets)) * 84))
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        artifact = artifact_record_for_path(target, artifact_type="archive", title=target.stem)
+        with EXPORT_JOBS_LOCK:
+            EXPORT_JOBS[export_id].update(
+                {
+                    "status": "success",
+                    "progress": 100,
+                    "downloadUrl": artifact["downloadUrl"],
+                    "file": artifact,
+                    "result": artifact,
+                    "updatedAt": now_iso(),
+                }
+            )
+    except Exception as error:
+        shutil.rmtree(output_dir() / "exports" / export_id, ignore_errors=True)
+        with EXPORT_JOBS_LOCK:
+            if export_id in EXPORT_JOBS:
+                EXPORT_JOBS[export_id].update(
+                    {"status": "error", "progress": 0, "error": str(error), "updatedAt": now_iso()}
+                )
+
+
+def create_export_job(body: dict) -> dict:
+    raw_ids = body.get("fileIds")
+    if not isinstance(raw_ids, list):
+        raise UploadError(400, "请选择需要打包的文件")
+    artifact_ids = list(dict.fromkeys(str(value) for value in raw_ids if str(value).strip()))
+    if not artifact_ids:
+        raise UploadError(400, "请选择需要打包的文件")
+    if len(artifact_ids) > 200:
+        raise UploadError(400, "一次最多打包 200 个文件")
+    targets = [output_target_from_artifact_id(artifact_id) for artifact_id in artifact_ids]
+    total_bytes = ensure_export_capacity(targets)
+    export_id = f"export_{uuid.uuid4().hex[:16]}"
+    requested_archive_name = str(body.get("archiveName") or "").strip()
+    if requested_archive_name:
+        if any(char in requested_archive_name for char in ("/", "\\", "\0")):
+            raise UploadError(400, "archiveName 不能包含路径")
+        archive_stem = Path(requested_archive_name).stem if requested_archive_name.lower().endswith(".zip") else requested_archive_name
+        archive_stem = re.sub(r"[\x00-\x1f\x7f]+", "", archive_stem).strip(" .")
+        if not archive_stem or archive_stem in {".", ".."}:
+            raise UploadError(400, "archiveName 无效")
+        archive_name = f"{archive_stem[:120]}.zip"
+    else:
+        archive_name = f"SelfCanvas-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{export_id[-6:]}.zip"
+    job = {
+        "id": export_id,
+        "status": "queued",
+        "progress": 0,
+        "fileCount": len(artifact_ids),
+        "sourceBytes": total_bytes,
+        "archiveName": archive_name,
+        "createdAt": now_iso(),
+        "updatedAt": now_iso(),
+    }
+    with EXPORT_JOBS_LOCK:
+        queue_limit = bounded_env_int("SELF_CANVAS_MAX_EXPORT_QUEUE", 20, 1, 200)
+        pending_count = sum(
+            1 for item in EXPORT_JOBS.values() if str(item.get("status") or "") in {"queued", "running"}
+        )
+        if pending_count >= queue_limit:
+            raise UploadError(429, "打包队列已满，请稍后重试")
+        EXPORT_JOBS[export_id] = job
+        if len(EXPORT_JOBS) > 500:
+            oldest = sorted(EXPORT_JOBS.values(), key=lambda item: item.get("createdAt", ""))[:100]
+            for item in oldest:
+                EXPORT_JOBS.pop(str(item.get("id") or ""), None)
+    EXPORT_EXECUTOR.submit(run_export_job, export_id, artifact_ids, archive_name)
+    return export_job_payload(job)
+
+
+def get_export_job(export_id: str) -> dict:
+    with EXPORT_JOBS_LOCK:
+        job = EXPORT_JOBS.get(export_id)
+        if not job:
+            raise UploadError(404, "打包任务不存在")
+        return export_job_payload(job)
 
 
 def anycap_available() -> bool:
@@ -1295,33 +2689,51 @@ class SelfCanvasHandler(BaseHTTPRequestHandler):
         print(f"[server] {self.address_string()} - {fmt % args}")
 
     def end_headers(self) -> None:
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = str(self.headers.get("Origin") or "").strip()
+        host = str(self.headers.get("Host") or "").strip()
+        allowed = configured_allowed_origins()
+        if origin and (origin in allowed or origin in {f"http://{host}", f"https://{host}"}):
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Credentials", "true")
+            self.send_header("Vary", "Origin")
         super().end_headers()
 
     def do_OPTIONS(self) -> None:
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-File-Name")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header(
+            "Access-Control-Allow-Headers",
+            "Content-Type, Authorization, X-File-Name, X-Request-Id, X-SelfCanvas-CSRF",
+        )
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
         self.end_headers()
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
+        query = parse_qs(parsed.query)
+        if path == "/api/browser/session":
+            try:
+                create_browser_session(self)
+            except UploadError as error:
+                send_error_json(self, error.status, str(error))
+            return
         if path == "/api/health":
             available, reason = queue_available()
+            video_available, video_reason = video_queue_available()
             send_json(
                 self,
                 200,
                 {
                     "status": "ok",
                     "queue": {"available": available, "reason": reason},
+                    "videoEditQueue": {"available": video_available, "reason": video_reason},
                     "outputDir": str(output_dir()),
                 },
             )
             return
         if path == "/api/config":
             available, reason = queue_available()
+            video_available, video_reason = video_queue_available()
             send_json(
                 self,
                 200,
@@ -1336,29 +2748,91 @@ class SelfCanvasHandler(BaseHTTPRequestHandler):
                     "anycap": {
                         "available": anycap_available(),
                         "bin": os.environ.get("ANYCAP_BIN", "anycap"),
+                        "imageModel": os.environ.get("ANYCAP_IMAGE_MODEL", "nano-banana-2"),
                         "videoModel": canonical_video_model(os.environ.get("ANYCAP_VIDEO_MODEL", "seedance-2-fast")),
                         "audioModel": os.environ.get("ANYCAP_AUDIO_MODEL", ""),
                         "videoCapabilities": ANYCAP_VIDEO_CAPABILITIES,
                     },
                     "queue": {"available": available, "reason": reason},
+                    "videoEditQueue": {"available": video_available, "reason": video_reason},
                 },
             )
             return
+        if path == "/api/project":
+            try:
+                send_json(self, 200, read_project_record())
+            except Exception as error:
+                send_error_json(self, 500, str(error))
+            return
+        if path == "/api/v2/events":
+            try:
+                since_revision = int((query.get("sinceRevision") or ["0"])[0] or 0)
+                self.serve_project_events(since_revision)
+            except UploadError as error:
+                send_error_json(self, error.status, str(error))
+            except Exception as error:
+                send_error_json(self, 400, str(error))
+            return
+        if path == "/api/v2/canvases":
+            try:
+                require_v2_api_token(self)
+                send_json(self, 200, canvases_v2(query))
+            except UploadError as error:
+                send_error_json(self, error.status, str(error))
+            return
+        if path.startswith("/api/v2/canvases/"):
+            try:
+                require_v2_api_token(self)
+                segments = [unquote(part) for part in path.split("/") if part]
+                if len(segments) < 4:
+                    raise UploadError(404, "Not found")
+                canvas_id = segments[3]
+                if len(segments) == 4:
+                    send_json(self, 200, canvas_v2(canvas_id, query))
+                    return
+                if len(segments) == 5 and segments[4] == "nodes":
+                    send_json(self, 200, search_canvas_nodes_v2(canvas_id, query))
+                    return
+                if len(segments) == 5 and segments[4] == "artifacts":
+                    send_json(self, 200, list_canvas_artifacts_v2(canvas_id, query))
+                    return
+                raise UploadError(404, "Not found")
+            except UploadError as error:
+                send_error_json(self, error.status, str(error))
+            return
+        if path.startswith("/api/v2/jobs/"):
+            try:
+                require_v2_api_token(self)
+                send_json(self, 200, get_job_v2(unquote(path.rsplit("/", 1)[-1])))
+            except UploadError as error:
+                send_error_json(self, error.status, str(error))
+            except Exception as error:
+                send_error_json(self, 404 if "不存在" in str(error) else 503, str(error))
+            return
         if path == "/api/generation/jobs":
             try:
-                send_json(self, 200, run_queue("list", timeout=8))
+                send_json(self, 200, list_all_jobs())
             except Exception as error:
                 send_error_json(self, 503, str(error))
             return
         if path.startswith("/api/generation/jobs/"):
             job_id = path.rsplit("/", 1)[-1]
             try:
-                send_json(self, 200, run_queue("get", job_id, timeout=8))
+                send_json(self, 200, get_any_job(job_id))
             except Exception as error:
                 send_error_json(self, 404 if "不存在" in str(error) else 503, str(error))
             return
+        if path.startswith("/api/exports/"):
+            try:
+                send_json(self, 200, get_export_job(unquote(path.rsplit("/", 1)[-1])))
+            except UploadError as error:
+                send_error_json(self, error.status, str(error))
+            return
         if path == "/api/files":
             send_json(self, 200, list_output_files())
+            return
+        if path.startswith("/api/files/download/"):
+            self.serve_artifact_download(unquote(path.rsplit("/", 1)[-1]))
             return
         if path == "/api/settings/storage":
             send_json(self, 200, storage_payload())
@@ -1371,6 +2845,57 @@ class SelfCanvasHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
+        try:
+            require_write_access(self)
+        except UploadError as error:
+            send_error_json(self, error.status, str(error))
+            return
+        if path == "/api/exports":
+            try:
+                send_json(self, 202, create_export_job(read_json_body(self)))
+            except UploadError as error:
+                send_error_json(self, error.status, str(error))
+            except Exception as error:
+                send_error_json(self, 500, f"文件打包失败：{error}")
+            return
+        if path == "/api/v2/downloads":
+            try:
+                require_v2_api_token(self)
+                send_json(self, 202, prepare_download_v2(read_json_body(self)))
+            except ProjectRevisionConflict as error:
+                send_json(self, 409, {"error": {"code": "revision_conflict", "message": str(error)}, **error.record})
+            except UploadError as error:
+                send_error_json(self, error.status, str(error))
+            return
+        if path.startswith("/api/v2/canvases/"):
+            try:
+                require_v2_api_token(self)
+                segments = [unquote(part) for part in path.split("/") if part]
+                if len(segments) < 5:
+                    raise UploadError(404, "Not found")
+                canvas_id = segments[3]
+                body = read_json_body(self)
+                if len(segments) == 5 and segments[4] == "operations":
+                    send_json(self, 200, apply_canvas_operations(canvas_id, body))
+                    return
+                if len(segments) == 5 and segments[4] == "video-edits":
+                    send_json(self, 202, create_video_edit_job(canvas_id, body))
+                    return
+                if len(segments) == 7 and segments[4] == "nodes" and segments[6] == "run":
+                    send_json(self, 202, start_saved_node_job(canvas_id, segments[5], body))
+                    return
+                raise UploadError(404, "Not found")
+            except ProjectRevisionConflict as error:
+                send_json(
+                    self,
+                    409,
+                    {"error": {"code": "revision_conflict", "message": str(error)}, **sanitize_public_value(error.record)},
+                )
+            except UploadError as error:
+                send_error_json(self, error.status, str(error))
+            except Exception as error:
+                send_error_json(self, 503, str(error))
+            return
         if path == "/api/settings/storage":
             try:
                 send_json(self, 200, apply_storage_root(str(read_json_body(self).get("saveRoot") or "")))
@@ -1400,7 +2925,7 @@ class SelfCanvasHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/generation/jobs/") and path.endswith("/cancel"):
             job_id = path.split("/")[-2]
             try:
-                send_json(self, 200, run_queue("cancel", job_id, timeout=8))
+                send_json(self, 200, cancel_any_job(job_id))
             except Exception as error:
                 send_error_json(self, 503, str(error))
             return
@@ -1442,6 +2967,26 @@ class SelfCanvasHandler(BaseHTTPRequestHandler):
             return
         send_error_json(self, 404, "Not found")
 
+    def do_PUT(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path != "/api/project":
+            send_error_json(self, 404, "Not found")
+            return
+        try:
+            require_write_access(self)
+            payload = read_json_body(self)
+            send_json(
+                self,
+                200,
+                save_project_state(payload.get("project"), int(payload.get("baseRevision") or 0)),
+            )
+        except ProjectRevisionConflict as error:
+            send_json(self, 409, {"error": "revision_conflict", **error.record})
+        except UploadError as error:
+            send_error_json(self, error.status, str(error))
+        except Exception as error:
+            send_error_json(self, 400, str(error))
+
     def serve_output_file(self, request_path: str) -> None:
         rel = unquote(request_path[len("/output/") :])
         target = (output_dir() / rel).resolve()
@@ -1456,18 +3001,84 @@ class SelfCanvasHandler(BaseHTTPRequestHandler):
             return
         self.send_file(target)
 
+    def serve_artifact_download(self, artifact_id: str) -> None:
+        try:
+            target = output_target_from_artifact_id(artifact_id)
+            self.send_file(target, download_name=target.name)
+        except UploadError as error:
+            send_error_json(self, error.status, str(error))
+
+    def serve_project_events(self, since_revision: int) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-transform")
+        # The browser client consumes one event with response.text() and then
+        # reconnects. Close each short-poll response so the promise resolves.
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        try:
+            def response_event():
+                with PROJECT_EVENT_CONDITION:
+                    event = getattr(PROJECT_EVENT_CONDITION, "event", None)
+                if isinstance(event, dict) and int(event.get("revision") or 0) > since_revision:
+                    return event
+                record = read_project_record()
+                if int(record.get("revision") or 0) > since_revision:
+                    payload = {
+                        "type": "project.snapshot",
+                        "revision": int(record.get("revision") or 0),
+                        "savedAt": str(record.get("savedAt") or ""),
+                    }
+                    project = record.get("project") if isinstance(record.get("project"), dict) else {}
+                    for canvas in project.get("canvases", []) if isinstance(project, dict) else []:
+                        if not isinstance(canvas, dict):
+                            continue
+                        if int(canvas.get("focusRevision") or 0) != int(record.get("revision") or 0):
+                            continue
+                        payload.update(
+                            {
+                                "canvasId": str(canvas.get("id") or ""),
+                                "focusNodeId": str(canvas.get("focusNodeId") or ""),
+                                "focusRequestId": str(canvas.get("focusRequestId") or ""),
+                            }
+                        )
+                        break
+                    return payload
+                return None
+
+            payload = response_event()
+            if payload is None:
+                with PROJECT_EVENT_CONDITION:
+                    PROJECT_EVENT_CONDITION.wait(timeout=8)
+                payload = response_event()
+            if payload is not None:
+                self.wfile.write(f"event: project\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8"))
+            else:
+                self.wfile.write(b": heartbeat\n\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
     def serve_static(self, request_path: str) -> None:
         if not DIST_DIR.exists():
             send_error_json(self, 404, "dist 不存在，请先运行 npm run build 或使用 Vite dev server")
             return
         rel = request_path.lstrip("/") or "index.html"
-        target = (DIST_DIR / rel).resolve()
-        if not str(target).startswith(str(DIST_DIR.resolve())) or not target.exists() or not target.is_file():
+        base = DIST_DIR.resolve()
+        target = (base / rel).resolve()
+        try:
+            target.relative_to(base)
+        except ValueError:
+            target = base / "index.html"
+        if not target.exists() or not target.is_file():
             target = DIST_DIR / "index.html"
         self.send_file(target)
 
-    def send_file(self, target: Path) -> None:
+    def send_file(self, target: Path, download_name: str | None = None) -> None:
         content_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+        if target.suffix.lower() == ".svg":
+            download_name = download_name or target.name
         size = target.stat().st_size
         start = 0
         end = max(0, size - 1)
@@ -1501,8 +3112,17 @@ class SelfCanvasHandler(BaseHTTPRequestHandler):
         content_length = 0 if size <= 0 else end - start + 1
         self.send_response(206 if partial else 200)
         self.send_header("Content-Type", content_type)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        if target.suffix.lower() == ".svg":
+            self.send_header("Content-Security-Policy", "sandbox")
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(content_length))
+        if download_name:
+            fallback = re.sub(r"[^A-Za-z0-9._-]+", "_", download_name) or "download"
+            self.send_header(
+                "Content-Disposition",
+                f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(download_name)}",
+            )
         if partial:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         self.end_headers()
@@ -1525,6 +3145,8 @@ class SelfCanvasHandler(BaseHTTPRequestHandler):
 def main() -> None:
     output_dir().mkdir(parents=True, exist_ok=True)
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    artifact_secret()
+    threading.Thread(target=managed_job_projector_loop, name="managed-job-projector", daemon=True).start()
     host = os.environ.get("SELF_CANVAS_HOST", "127.0.0.1")
     port = int(os.environ.get("SELF_CANVAS_PORT", "8787"))
     server = ThreadingHTTPServer((host, port), SelfCanvasHandler)

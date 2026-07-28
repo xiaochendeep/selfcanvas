@@ -54,6 +54,7 @@ interface SettingsStore {
 }
 
 export const SETTINGS_STORAGE_KEY = 'selfcanvas.settings.v1';
+const COMPOSER_LAYOUT_MIGRATION_KEY = 'selfcanvas.composer-layout-resizable.v2';
 
 export const defaultSettings: StudioSettings = {
   language: 'zh-CN',
@@ -98,9 +99,18 @@ function readSettings(): StudioSettings {
   if (typeof window === 'undefined') return defaultSettings;
   try {
     const raw = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
-    if (!raw) return defaultSettings;
+    if (!raw) {
+      window.localStorage.setItem(COMPOSER_LAYOUT_MIGRATION_KEY, '1');
+      return defaultSettings;
+    }
     const parsed = JSON.parse(raw) as Partial<StudioSettings>;
-    return { ...defaultSettings, ...parsed };
+    const settings = { ...defaultSettings, ...parsed };
+    if (!window.localStorage.getItem(COMPOSER_LAYOUT_MIGRATION_KEY)) {
+      settings.composerResizable = true;
+      window.localStorage.setItem(COMPOSER_LAYOUT_MIGRATION_KEY, '1');
+      window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+    }
+    return settings;
   } catch {
     return defaultSettings;
   }

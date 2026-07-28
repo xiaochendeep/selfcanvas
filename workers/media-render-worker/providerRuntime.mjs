@@ -1,9 +1,13 @@
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
+import dns from 'node:dns/promises';
 import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
+import net from 'node:net';
+import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Agent, fetch as undiciFetch } from 'undici';
 import {
   buildStoryboardRepairPrompt,
   buildStoryboardSystemPrompt,
@@ -39,6 +43,8 @@ export function loadDotEnv() {
 }
 
 export function outputDir() {
+  const forcedRoot = String(process.env.SELF_CANVAS_STORAGE_ROOT || '').trim();
+  if (forcedRoot) return path.resolve(forcedRoot, 'output');
   try {
     const config = JSON.parse(fsSync.readFileSync(path.join(rootDir, '.runtime', 'storage.json'), 'utf8'));
     if (typeof config.saveRoot === 'string' && config.saveRoot.trim()) {
@@ -208,6 +214,7 @@ const seedanceRatios = ['16:9', '3:4', '21:9', '9:16', '4:3', '1:1'];
 
 const videoCapabilities = {
   'seedance-2-fast': {
+    supportsGenerateAudio: true,
     mode: 'multi-modal-reference',
     modes: ['multi-modal-reference', 'image-to-video', 'text-to-video'],
     resolutions: ['480p', '720p'],
@@ -222,6 +229,7 @@ const videoCapabilities = {
     },
   },
   'seedance-2': {
+    supportsGenerateAudio: true,
     mode: 'multi-modal-reference',
     modes: ['multi-modal-reference', 'image-to-video', 'text-to-video'],
     resolutions: ['480p', '720p', '1080p', '4k'],
@@ -236,6 +244,7 @@ const videoCapabilities = {
     },
   },
   'seedance-1.5-pro': {
+    supportsGenerateAudio: true,
     mode: 'image-to-video',
     modes: ['image-to-video', 'text-to-video'],
     resolutions: ['480p', '720p'],
@@ -249,6 +258,7 @@ const videoCapabilities = {
     },
   },
   'kling-3.0': {
+    supportsGenerateAudio: true,
     mode: 'multi-shot-video',
     modes: ['multi-shot-video', 'image-to-video', 'text-to-video'],
     resolutions: ['720p', '1080p', '4k'],
@@ -263,6 +273,7 @@ const videoCapabilities = {
     },
   },
   'kling-3.0-omni': {
+    supportsGenerateAudio: true,
     mode: 'multi-shot-video',
     modes: ['multi-shot-video', 'image-to-video', 'text-to-video'],
     resolutions: ['720p', '1080p'],
@@ -469,20 +480,201 @@ async function fetchDirectOpenAICompatible(apiPath, body) {
   });
 }
 
-async function persistRemoteFile(url, jobId, fallbackExtension) {
+function remoteMediaTrustedOrigins() {
+  const configured = [
+    process.env.SUB2API_BASE_URL,
+    process.env.OPENAI_COMPATIBLE_BASE_URL,
+    process.env.OPENAI_BASE_URL,
+    ...(process.env.SELF_CANVAS_REMOTE_MEDIA_ORIGINS || '').split(','),
+  ];
+  const origins = new Set();
+  for (const value of configured) {
+    try {
+      if (String(value || '').trim()) origins.add(new URL(String(value).trim()).origin);
+    } catch {
+      // Ignore malformed optional configuration; the provider request itself reports it separately.
+    }
+  }
+  return origins;
+}
+
+function isUnsafeIpv4(address) {
+  const octets = address.split('.').map(Number);
+  if (octets.length !== 4 || octets.some((item) => !Number.isInteger(item) || item < 0 || item > 255)) return true;
+  const [a, b] = octets;
+  return (
+    a === 0 || a === 10 || a === 127 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && (b === 0 || b === 168)) ||
+    (a === 198 && (b === 18 || b === 19)) ||
+    a >= 224
+  );
+}
+
+function isUnsafeIpAddress(address) {
+  const normalized = String(address || '').trim().toLowerCase().split('%', 1)[0];
+  const version = net.isIP(normalized);
+  if (version === 4) return isUnsafeIpv4(normalized);
+  if (version !== 6) return true;
+  if (normalized === '::' || normalized === '::1' || normalized.startsWith('fc') || normalized.startsWith('fd')) return true;
+  if (/^fe[89ab]/.test(normalized) || normalized.startsWith('ff') || normalized.startsWith('2001:db8:')) return true;
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(normalized);
+  return mapped ? isUnsafeIpv4(mapped[1]) : false;
+}
+
+export async function validateRemoteMediaUrl(rawUrl) {
+  let parsed;
+  try {
+    parsed = new URL(String(rawUrl || ''));
+  } catch {
+    throw new Error('供应商返回了无效媒体 URL');
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.href.length > 4096) {
+    throw new Error('供应商媒体 URL 协议或格式不受支持');
+  }
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '');
+  const blockedNames = new Set(['localhost', 'localhost.localdomain', 'metadata.google.internal', 'instance-data']);
+  const trustedOrigin = remoteMediaTrustedOrigins().has(parsed.origin);
+  if (blockedNames.has(hostname.toLowerCase()) && !trustedOrigin) {
+    throw new Error('拒绝下载指向本机或 metadata 的供应商媒体 URL');
+  }
+  let addresses;
+  if (net.isIP(hostname)) addresses = [{ address: hostname }];
+  else {
+    try {
+      addresses = await dns.lookup(hostname, { all: true, verbatim: true });
+    } catch {
+      throw new Error('供应商媒体域名无法解析');
+    }
+  }
+  if (!addresses.length || (!trustedOrigin && addresses.some((item) => isUnsafeIpAddress(item.address)))) {
+    throw new Error('拒绝下载指向私网、回环或保留地址的供应商媒体 URL');
+  }
+  return {
+    url: parsed,
+    addresses: addresses.map((item) => ({
+      address: item.address,
+      family: Number(item.family || net.isIP(item.address)),
+    })),
+  };
+}
+
+function pinnedRemoteMediaAgent(validation) {
+  const expectedHostname = validation.url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  const candidates = validation.addresses.filter((item) => item.family === 4 || item.family === 6);
+  if (!candidates.length) throw new Error('供应商媒体域名没有可用地址');
+  let cursor = 0;
+  return new Agent({
+    connect: {
+      autoSelectFamily: false,
+      lookup(hostname, _options, callback) {
+        const normalized = String(hostname || '').replace(/^\[|\]$/g, '').toLowerCase();
+        if (normalized !== expectedHostname) {
+          callback(new Error('供应商媒体连接主机与已校验主机不一致'));
+          return;
+        }
+        const candidate = candidates[cursor % candidates.length];
+        cursor += 1;
+        callback(null, candidate.address, candidate.family);
+      },
+    },
+  });
+}
+
+async function fetchRemoteMedia(rawUrl, signal) {
+  let validation = await validateRemoteMediaUrl(rawUrl);
+  for (let redirects = 0; redirects <= 4; redirects += 1) {
+    const dispatcher = pinnedRemoteMediaAgent(validation);
+    let response;
+    try {
+      response = await undiciFetch(validation.url, { redirect: 'manual', signal, dispatcher });
+    } catch (error) {
+      await dispatcher.close().catch(() => undefined);
+      throw error;
+    }
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location');
+      await response.body?.cancel().catch(() => undefined);
+      await dispatcher.close().catch(() => undefined);
+      if (!location || redirects === 4) throw new Error('供应商媒体重定向无效或次数过多');
+      validation = await validateRemoteMediaUrl(new URL(location, validation.url).href);
+      continue;
+    }
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      await dispatcher.close().catch(() => undefined);
+      throw new Error(`下载生成文件失败：${response.status}`);
+    }
+    return { response, dispatcher };
+  }
+  throw new Error('供应商媒体重定向次数过多');
+}
+
+function detectedImageExtension(bytes) {
+  if (bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'png';
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'jpg';
+  if (bytes.length >= 12 && bytes.subarray(0, 4).toString('ascii') === 'RIFF' && bytes.subarray(8, 12).toString('ascii') === 'WEBP') return 'webp';
+  if (bytes.length >= 12 && bytes.subarray(4, 8).toString('ascii') === 'ftyp' && /^(?:avif|avis)$/.test(bytes.subarray(8, 12).toString('ascii'))) return 'avif';
+  return '';
+}
+
+function remoteMediaMaxBytes() {
+  const megabytes = Number(process.env.SELF_CANVAS_REMOTE_MEDIA_MAX_MB || 64);
+  return Math.max(1, Math.min(512, Number.isFinite(megabytes) ? megabytes : 64)) * 1024 * 1024;
+}
+
+export async function persistRemoteFile(url, jobId, fallbackExtension = 'png') {
   await ensureOutputDir();
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`下载生成文件失败：${response.status}`);
-  const contentType = response.headers.get('content-type') || '';
-  const extension =
-    contentType.includes('png') ? 'png' :
-    contentType.includes('jpeg') || contentType.includes('jpg') ? 'jpg' :
-    contentType.includes('webp') ? 'webp' :
-    fallbackExtension;
-  const filePath = path.join(outputDir(), `${safeId(jobId)}.${extension}`);
-  const buffer = Buffer.from(await response.arrayBuffer());
-  await fs.writeFile(filePath, buffer);
-  return outputUrl(filePath);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(new Error('供应商媒体下载超时')), 60_000);
+  const temporary = path.join(outputDir(), `.${safeId(jobId)}-${crypto.randomUUID()}.part`);
+  let handle;
+  let dispatcher;
+  let remoteResponse;
+  try {
+    const remote = await fetchRemoteMedia(url, controller.signal);
+    const response = remote.response;
+    remoteResponse = response;
+    dispatcher = remote.dispatcher;
+    const contentType = String(response.headers.get('content-type') || '').split(';', 1)[0].trim().toLowerCase();
+    if (contentType && !['image/png', 'image/jpeg', 'image/webp', 'image/avif', 'application/octet-stream'].includes(contentType)) {
+      throw new Error(`供应商返回了不支持的媒体类型：${contentType}`);
+    }
+    const declaredSize = Number(response.headers.get('content-length') || 0);
+    const maxBytes = remoteMediaMaxBytes();
+    if (declaredSize > maxBytes) throw new Error(`供应商媒体超过 ${Math.round(maxBytes / 1024 / 1024)} MB 安全上限`);
+    if (!response.body) throw new Error('供应商媒体响应为空');
+    handle = await fs.open(temporary, 'wx');
+    let size = 0;
+    let header = Buffer.alloc(0);
+    for await (const rawChunk of response.body) {
+      const chunk = Buffer.from(rawChunk);
+      size += chunk.byteLength;
+      if (size > maxBytes) throw new Error(`供应商媒体超过 ${Math.round(maxBytes / 1024 / 1024)} MB 安全上限`);
+      if (header.length < 32) header = Buffer.concat([header, chunk]).subarray(0, 32);
+      await handle.write(chunk);
+    }
+    await handle.close();
+    handle = undefined;
+    if (!size) throw new Error('供应商媒体内容为空');
+    const detectedExtension = detectedImageExtension(header);
+    if (!detectedExtension) throw new Error('供应商媒体内容不是受支持的 PNG/JPEG/WebP/AVIF 图片');
+    const requestedFallback = ['png', 'jpg', 'webp', 'avif'].includes(fallbackExtension) ? fallbackExtension : 'png';
+    const extension = detectedExtension || requestedFallback;
+    const filePath = path.join(outputDir(), `${safeId(jobId)}.${extension}`);
+    await fs.rename(temporary, filePath);
+    return outputUrl(filePath);
+  } catch (error) {
+    await remoteResponse?.body?.cancel().catch(() => undefined);
+    await handle?.close().catch(() => undefined);
+    await fs.rm(temporary, { force: true }).catch(() => undefined);
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    await dispatcher?.close().catch(() => undefined);
+  }
 }
 
 export async function runSub2Text(job, payload) {
@@ -621,8 +813,8 @@ export async function runSub2Image(job, payload) {
     try {
       const localUrl = await persistRemoteFile(first.url, job.id, 'png');
       return { imageUrl: localUrl, fileUrl: localUrl, text: 'Sub2API 图像已生成。' };
-    } catch {
-      return { imageUrl: first.url, text: 'Sub2API 图像已生成，远程 URL 未能落盘。' };
+    } catch (error) {
+      throw new Error(`Sub2API 图像已生成，但无法安全落盘，暂不可预览或下载：${error?.message || error}`);
     }
   }
   if (first.b64_json) {
@@ -662,8 +854,8 @@ export async function runOpenAICompatibleImage(job, payload) {
     try {
       const localUrl = await persistRemoteFile(first.url, job.id, 'png');
       return { imageUrl: localUrl, fileUrl: localUrl, text: 'OpenAI Compatible 图像已生成。' };
-    } catch {
-      return { imageUrl: first.url, text: 'OpenAI Compatible 图像已生成，远程 URL 未能落盘。' };
+    } catch (error) {
+      throw new Error(`OpenAI Compatible 图像已生成，但无法安全落盘，暂不可预览或下载：${error?.message || error}`);
     }
   }
   if (first.b64_json) {
@@ -674,6 +866,26 @@ export async function runOpenAICompatibleImage(job, payload) {
     return { imageUrl: localUrl, fileUrl: localUrl, text: 'OpenAI Compatible 图像已生成。' };
   }
   throw new Error('OpenAI Compatible 返回成功，但图像既没有 url 也没有 b64_json。');
+}
+
+export function commandErrorMessage(command, stdout, stderr, code) {
+  const raw = String(stderr || stdout || '').trim();
+  const candidates = [raw, ...raw.split(/\r?\n/).reverse()].filter(Boolean);
+  for (const candidate of candidates) {
+    try {
+      const payload = JSON.parse(candidate);
+      const message = String(payload.message || payload.error_description || '').trim();
+      const errorCode = String(payload.error || payload.code || '').trim();
+      const traceId = String(payload.trace_id || payload.request_id || '').trim();
+      if (command.toLowerCase().includes('anycap') && (errorCode === 'connection_error' || /\bEOF\b/i.test(message))) {
+        return `AnyCap 视频服务连接临时中断（EOF）。本地参数没有问题，请稍后点击“生成”重试。${traceId ? ` 追踪号：${traceId}` : ''}`;
+      }
+      if (message) return traceId ? `${message}（追踪号：${traceId}）` : message;
+    } catch {
+      // Continue to the next possible JSON line, then fall back to raw output.
+    }
+  }
+  return raw || `${command} exited with ${code}`;
 }
 
 function runCommand(command, args, options = {}) {
@@ -697,7 +909,7 @@ function runCommand(command, args, options = {}) {
         resolve({ stdout, stderr });
         return;
       }
-      reject(new Error(stderr.trim() || stdout.trim() || `${command} exited with ${code}`));
+      reject(new Error(commandErrorMessage(command, stdout, stderr, code)));
     });
   });
 }
@@ -732,6 +944,117 @@ function parseAnyCapLocalPath(stdout) {
   } catch {
     return '';
   }
+}
+
+async function readIncomingBody(request, maximumBytes = 8 * 1024 * 1024) {
+  const chunks = [];
+  let size = 0;
+  for await (const rawChunk of request) {
+    const chunk = Buffer.from(rawChunk);
+    size += chunk.byteLength;
+    if (size > maximumBytes) throw new Error('AnyCap 本地能力桥接请求过大');
+    chunks.push(chunk);
+  }
+  return chunks.length ? Buffer.concat(chunks) : undefined;
+}
+
+export async function startAnyCapCapabilityBridge(sourceCapability, targetCapability) {
+  const upstream = new URL(process.env.ANYCAP_ENDPOINT || 'https://api.anycap.ai');
+  const sourcePrefix = `/v1/${sourceCapability}`;
+  const targetPrefix = `/v1/${targetCapability}`;
+  const server = http.createServer(async (request, response) => {
+    try {
+      const incomingUrl = new URL(request.url || '/', 'http://127.0.0.1');
+      const mappedPath = incomingUrl.pathname.startsWith(sourcePrefix)
+        ? `${targetPrefix}${incomingUrl.pathname.slice(sourcePrefix.length)}`
+        : incomingUrl.pathname;
+      const targetUrl = new URL(`${mappedPath}${incomingUrl.search}`, upstream);
+      const headers = {};
+      for (const [key, value] of Object.entries(request.headers)) {
+        if (!value || ['host', 'connection', 'content-length', 'transfer-encoding'].includes(key.toLowerCase())) continue;
+        headers[key] = Array.isArray(value) ? value.join(', ') : value;
+      }
+      const body = request.method === 'GET' || request.method === 'HEAD' ? undefined : await readIncomingBody(request);
+      const upstreamResponse = await undiciFetch(targetUrl, {
+        method: request.method || 'GET',
+        headers,
+        body,
+        redirect: 'manual',
+      });
+      response.statusCode = upstreamResponse.status;
+      upstreamResponse.headers.forEach((value, key) => {
+        if (!['connection', 'content-length', 'transfer-encoding', 'content-encoding'].includes(key.toLowerCase())) {
+          response.setHeader(key, value);
+        }
+      });
+      const responseBody = Buffer.from(await upstreamResponse.arrayBuffer());
+      response.setHeader('content-length', String(responseBody.byteLength));
+      response.end(responseBody);
+    } catch (error) {
+      const body = Buffer.from(JSON.stringify({
+        status: 'error',
+        error: { code: 'SELFCANVAS_CAPABILITY_BRIDGE_ERROR', message: error instanceof Error ? error.message : String(error) },
+      }));
+      response.statusCode = 502;
+      response.setHeader('content-type', 'application/json');
+      response.setHeader('content-length', String(body.byteLength));
+      response.end(body);
+    }
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    server.close();
+    throw new Error('AnyCap 本地能力桥接启动失败');
+  }
+  return {
+    endpoint: `http://127.0.0.1:${address.port}`,
+    close: () => new Promise((resolve) => server.close(() => resolve())),
+  };
+}
+
+export async function runAnyCapImage(job, payload) {
+  await ensureOutputDir();
+  const options = optionsOf(payload);
+  const model = stringOption(
+    options.model,
+    process.env.ANYCAP_IMAGE_MODEL || (payload.model && !payload.model.startsWith('mock') ? payload.model : '') || 'nano-banana-2',
+  );
+  const bin = process.env.ANYCAP_BIN || 'anycap';
+  const filePath = path.join(outputDir(), `${safeId(job.id)}.png`);
+  const imagePaths = await existingReferencePaths(payload, 'image');
+  const mode = imagePaths.length ? 'image-to-image' : 'text-to-image';
+  const args = [
+    'image',
+    'generate',
+    '--model',
+    model,
+    '--mode',
+    mode,
+    '--prompt',
+    withReferenceContext(payload.prompt || 'cinematic reference image', payload),
+    '-o',
+    filePath,
+  ];
+  addAnyCapParam(args, 'aspect_ratio', stringOption(options.aspectRatio));
+  if (imagePaths.length) addAnyCapJsonParam(args, 'images', imagePaths);
+  const result = await runWithSyntheticProgress(job, 18, 92, () => runCommand(bin, args));
+  try {
+    await fs.access(filePath);
+  } catch {
+    const localPath = parseAnyCapLocalPath(result.stdout);
+    if (localPath) await fs.copyFile(localPath, filePath);
+  }
+  await fs.access(filePath);
+  const localUrl = outputUrl(filePath);
+  return {
+    imageUrl: localUrl,
+    fileUrl: localUrl,
+    text: `AnyCap 图片已生成：${model}`,
+  };
 }
 
 export async function runAnyCapVideo(job, payload) {
@@ -784,7 +1107,9 @@ export async function runAnyCapVideo(job, payload) {
   addAnyCapParam(args, 'duration', duration);
   addAnyCapParam(args, 'aspect_ratio', stringOption(options.aspectRatio) === 'adaptive' ? 'adaptive' : aspectRatio);
   addAnyCapParam(args, 'format', stringOption(options.format, 'mp4'));
-  if (typeof options.generateAudio === 'boolean') addAnyCapParam(args, 'generate_audio', String(options.generateAudio));
+  if (capability.supportsGenerateAudio && typeof options.generateAudio === 'boolean') {
+    addAnyCapParam(args, 'generate_audio', String(options.generateAudio));
+  }
   if ((limits.image ?? 0) > 0 && mode !== 'text-to-video') {
     addAnyCapJsonParam(args, 'images', imagePaths);
   }
@@ -815,30 +1140,72 @@ export async function runAnyCapVideo(job, payload) {
 
 export async function runAnyCapAudio(job, payload) {
   const options = optionsOf(payload);
-  const model = stringOption(options.model, process.env.ANYCAP_AUDIO_MODEL || '');
+  const requestedModel = stringOption(options.model, process.env.ANYCAP_AUDIO_MODEL || 'doubao-seed-audio-1-0');
+  const model = requestedModel === 'anycap-audio' ? 'elevanlabs-music' : requestedModel;
   if (!model) {
     throw new Error('AnyCap 音频模型未配置。请在 .env 设置 ANYCAP_AUDIO_MODEL 后再运行音频节点。');
   }
   await ensureOutputDir();
   const bin = process.env.ANYCAP_BIN || 'anycap';
-  const filePath = path.join(outputDir(), `${safeId(job.id)}.mp3`);
+  const isDoubaoAudio = model === 'doubao-seed-audio-1-0';
+  const format = ['mp3', 'wav'].includes(stringOption(options.format).toLowerCase())
+    ? stringOption(options.format).toLowerCase()
+    : 'mp3';
+  const filePath = path.join(outputDir(), `${safeId(job.id)}.${format}`);
   const audioPaths = await existingReferencePaths(payload, 'audio');
+  const imagePaths = await existingReferencePaths(payload, 'image');
+  const allowedModes = ['text-to-audio', 'audio-to-audio', 'image-to-audio'];
+  const mode = isDoubaoAudio
+    ? (allowedModes.includes(stringOption(options.mode)) ? stringOption(options.mode) : 'text-to-audio')
+    : stringOption(options.mode, 'text-to-music');
+  if (isDoubaoAudio && mode === 'audio-to-audio' && (audioPaths.length < 1 || audioPaths.length > 3)) {
+    throw new Error('Doubao Seed Audio 音频参考模式需要 1–3 段音频');
+  }
+  if (isDoubaoAudio && mode === 'image-to-audio' && imagePaths.length !== 1) {
+    throw new Error('Doubao Seed Audio 图片参考模式需要 1 张图片');
+  }
+  if (isDoubaoAudio && mode === 'text-to-audio' && (audioPaths.length || imagePaths.length)) {
+    throw new Error('Doubao Seed Audio 文本模式不接受图片或音频参考');
+  }
+  const bridge = isDoubaoAudio ? await startAnyCapCapabilityBridge('music', 'audio') : null;
   const args = [
+    ...(bridge ? ['--endpoint', bridge.endpoint] : []),
     'music',
-    stringOption(options.mode, 'text-to-music'),
+    'generate',
     '--model',
     model,
+    '--mode',
+    mode,
     '--prompt',
     withReferenceContext(payload.prompt || 'soft background score', payload),
     '-o',
     filePath,
   ];
-  addAnyCapParam(args, 'duration', numberOption(options.duration, undefined));
-  addAnyCapParam(args, 'style', stringOption(options.style));
-  addAnyCapParam(args, 'voice_reference', stringOption(options.voiceReference, audioPaths[0] || ''));
-  addAnyCapParam(args, 'target_voice', stringOption(options.targetVoice, audioPaths[1] || ''));
-  addAnyCapParam(args, 'voice_mode', stringOption(options.voiceMode));
-  const result = await runWithSyntheticProgress(job, 18, 92, () => runCommand(bin, args));
+  if (isDoubaoAudio) {
+    addAnyCapParam(args, 'format', format);
+    addAnyCapParam(args, 'sample_rate', closestNumberOption([8000, 16000, 24000, 32000, 44100, 48000], options.sampleRate, 24000));
+    addAnyCapParam(args, 'speech_rate', Math.max(-50, Math.min(100, Math.round(numberOption(options.speechRate, 0)))));
+    addAnyCapParam(args, 'pitch_rate', Math.max(-12, Math.min(12, Math.round(numberOption(options.pitchRate, 0)))));
+    addAnyCapParam(args, 'loudness_rate', Math.max(-50, Math.min(100, Math.round(numberOption(options.loudnessRate, 0)))));
+    addAnyCapParam(args, 'enable_subtitle', String(options.enableSubtitle === true));
+    if (mode === 'text-to-audio') {
+      const speakerIds = Array.isArray(options.speakerIds)
+        ? options.speakerIds.map((item) => String(item).trim()).filter(Boolean).slice(0, 1)
+        : [];
+      addAnyCapJsonParam(args, 'speaker_ids', speakerIds);
+    }
+    if (mode === 'audio-to-audio') addAnyCapJsonParam(args, 'audios', audioPaths);
+    if (mode === 'image-to-audio') addAnyCapJsonParam(args, 'images', imagePaths);
+  } else {
+    addAnyCapParam(args, 'duration', numberOption(options.duration, undefined));
+    addAnyCapParam(args, 'style', stringOption(options.style));
+  }
+  let result;
+  try {
+    result = await runWithSyntheticProgress(job, 18, 92, () => runCommand(bin, args));
+  } finally {
+    await bridge?.close().catch(() => undefined);
+  }
   try {
     await fs.access(filePath);
   } catch {
@@ -923,6 +1290,7 @@ export async function runProviderJob(job) {
   }
   if (payload.kind === 'image') {
     if (providerTool === 'openai-compatible') return runOpenAICompatibleImage(job, payload);
+    if (providerTool === 'anycap') return runAnyCapImage(job, payload);
     if (!providerTool || providerTool === 'sub2api') return runSub2Image(job, payload);
     throw new Error(`图片节点暂不支持 provider：${providerTool}`);
   }

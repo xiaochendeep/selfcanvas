@@ -1,17 +1,27 @@
 services:
   selfcanvas:
+    restart: unless-stopped
     build:
       context: .
     command: sh -c "npm run build && python3 server.py"
     environment:
       SELF_CANVAS_HOST: 0.0.0.0
       SELF_CANVAS_PORT: 8787
+      SELF_CANVAS_STORAGE_ROOT: /app
+      SELF_CANVAS_API_TOKEN: ${SELF_CANVAS_API_TOKEN:?set SELF_CANVAS_API_TOKEN in .env}
+      SELF_CANVAS_ALLOWED_ORIGINS: ${SELF_CANVAS_ALLOWED_ORIGINS:-}
+      SELF_CANVAS_EXPORT_CONCURRENCY: ${SELF_CANVAS_EXPORT_CONCURRENCY:-2}
+      SELF_CANVAS_MAX_EXPORT_QUEUE: ${SELF_CANVAS_MAX_EXPORT_QUEUE:-20}
+      SELF_CANVAS_MAX_EXPORT_GB: ${SELF_CANVAS_MAX_EXPORT_GB:-8}
+      SELF_CANVAS_MIN_FREE_GB: ${SELF_CANVAS_MIN_FREE_GB:-1}
       REDIS_URL: redis://redis:6379/0
+      VIDEO_EDIT_QUEUE_NAME: ${VIDEO_EDIT_QUEUE_NAME:-selfcanvas-video-edit}
       SUB2API_BASE_URL: ${SUB2API_BASE_URL:-http://10.0.0.239:3000}
       SUB2API_API_KEY: ${SUB2API_API_KEY:-}
       SUB2API_TEXT_MODEL: ${SUB2API_TEXT_MODEL:-gpt-4o-mini}
       SUB2API_IMAGE_MODEL: ${SUB2API_IMAGE_MODEL:-gpt-image-2}
       ANYCAP_BIN: ${ANYCAP_BIN:-anycap}
+      ANYCAP_IMAGE_MODEL: ${ANYCAP_IMAGE_MODEL:-nano-banana-2}
       ANYCAP_VIDEO_MODEL: ${ANYCAP_VIDEO_MODEL:-seedance-2-fast}
       ANYCAP_AUDIO_MODEL: ${ANYCAP_AUDIO_MODEL:-}
       OUTPUT_DIR: /app/output
@@ -19,29 +29,90 @@ services:
       - "8787:8787"
     volumes:
       - ./output:/app/output
+      - ./.runtime:/app/.runtime
+      - ~/.anycap:/root/.anycap
     depends_on:
       - redis
 
+  selfcanvas-mcp:
+    restart: unless-stopped
+    build:
+      context: .
+    command: npm run mcp:http
+    environment:
+      SELF_CANVAS_MCP_HOST: 0.0.0.0
+      SELF_CANVAS_MCP_PORT: 8790
+      SELF_CANVAS_MCP_TOKEN: ${SELF_CANVAS_MCP_TOKEN:?set SELF_CANVAS_MCP_TOKEN in .env}
+      SELF_CANVAS_MCP_SCOPES: ${SELF_CANVAS_MCP_SCOPES:-canvas:read,canvas:write,generation:read,generation:run,artifacts:read,artifacts:download}
+      SELF_CANVAS_BASE_URL: http://selfcanvas:8787
+      SELF_CANVAS_PUBLIC_BASE_URL: ${SELF_CANVAS_PUBLIC_BASE_URL:-http://127.0.0.1:8787}
+      SELF_CANVAS_API_TOKEN: ${SELF_CANVAS_API_TOKEN:?set SELF_CANVAS_API_TOKEN in .env}
+    ports:
+      - "8790:8790"
+    depends_on:
+      - selfcanvas
+
   media-worker:
+    restart: unless-stopped
     build:
       context: .
     command: npm run worker
     environment:
       REDIS_URL: redis://redis:6379/0
+      SELF_CANVAS_STORAGE_ROOT: /app
+      SELF_CANVAS_REMOTE_MEDIA_MAX_MB: ${SELF_CANVAS_REMOTE_MEDIA_MAX_MB:-64}
+      SELF_CANVAS_REMOTE_MEDIA_ORIGINS: ${SELF_CANVAS_REMOTE_MEDIA_ORIGINS:-}
       SUB2API_BASE_URL: ${SUB2API_BASE_URL:-http://10.0.0.239:3000}
       SUB2API_API_KEY: ${SUB2API_API_KEY:-}
       SUB2API_TEXT_MODEL: ${SUB2API_TEXT_MODEL:-gpt-4o-mini}
       SUB2API_IMAGE_MODEL: ${SUB2API_IMAGE_MODEL:-gpt-image-2}
       ANYCAP_BIN: ${ANYCAP_BIN:-anycap}
+      ANYCAP_IMAGE_MODEL: ${ANYCAP_IMAGE_MODEL:-nano-banana-2}
       ANYCAP_VIDEO_MODEL: ${ANYCAP_VIDEO_MODEL:-seedance-2-fast}
       ANYCAP_AUDIO_MODEL: ${ANYCAP_AUDIO_MODEL:-}
       OUTPUT_DIR: /app/output
     volumes:
       - ./output:/app/output
+      - ./.runtime:/app/.runtime
+      - ~/.anycap:/root/.anycap
+    depends_on:
+      - redis
+
+  video-edit-worker:
+    restart: unless-stopped
+    build:
+      context: .
+    command: npm run worker:video-edit
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      SELF_CANVAS_STORAGE_ROOT: /app
+      VIDEO_EDIT_QUEUE_NAME: ${VIDEO_EDIT_QUEUE_NAME:-selfcanvas-video-edit}
+      VIDEO_EDIT_WORKER_CONCURRENCY: ${VIDEO_EDIT_WORKER_CONCURRENCY:-1}
+      VIDEO_EDIT_JOB_TIMEOUT_MS: ${VIDEO_EDIT_JOB_TIMEOUT_MS:-7200000}
+      SUB2API_BASE_URL: ${SUB2API_BASE_URL:-http://10.0.0.239:3000}
+      SUB2API_API_KEY: ${SUB2API_API_KEY:-}
+      SUB2API_TEXT_MODEL: ${SUB2API_TEXT_MODEL:-gpt-4o-mini}
+      ANYCAP_BIN: ${ANYCAP_BIN:-anycap}
+      ANYCAP_VIDEO_EDIT_MODEL: ${ANYCAP_VIDEO_EDIT_MODEL:-gemini-omni-flash-preview}
+      ANYCAP_VIDEO_READ_MODEL: ${ANYCAP_VIDEO_READ_MODEL:-}
+      FFMPEG_BIN: ${FFMPEG_BIN:-ffmpeg}
+      FFPROBE_BIN: ${FFPROBE_BIN:-ffprobe}
+      OUTPUT_DIR: /app/output
+    volumes:
+      - ./output:/app/output
+      - ./.runtime:/app/.runtime
+      - ~/.anycap:/root/.anycap
     depends_on:
       - redis
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes --save 60 1
     ports:
       - "127.0.0.1:6379:6379"
+    volumes:
+      - selfcanvas-redis-data:/data
+
+volumes:
+  selfcanvas-redis-data:

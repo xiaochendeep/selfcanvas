@@ -18,6 +18,7 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react';
+import { browserApiFetch } from '../services/browserSession';
 import { useEffect, useState, type ReactNode } from 'react';
 import { previewCompletionTone } from '../services/completionNotifier';
 import { useSettingsStore, type ApiProviderId, type ProviderDrafts, type StudioSettings } from '../store/settingsStore';
@@ -145,7 +146,7 @@ const initialProviderStatus: ProviderStatusMap = {
 };
 
 async function postJson<T>(url: string, body: unknown): Promise<T> {
-  const response = await fetch(url, {
+  const response = await browserApiFetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -190,6 +191,7 @@ function Segment<T extends string>({
     <div className="settings-segment">
       {options.map((option) => (
         <button
+          aria-pressed={option.value === value}
           className={option.value === value ? 'is-active' : ''}
           key={option.value}
           type="button"
@@ -206,10 +208,10 @@ function Segment<T extends string>({
 function TogglePair({ value, onChange }: { value: boolean; onChange: (value: boolean) => void }) {
   return (
     <div className="settings-segment settings-toggle-pair">
-      <button className={value ? 'is-active' : ''} type="button" onClick={() => onChange(true)}>
+      <button aria-pressed={value} className={value ? 'is-active' : ''} type="button" onClick={() => onChange(true)}>
         开
       </button>
-      <button className={!value ? 'is-active' : ''} type="button" onClick={() => onChange(false)}>
+      <button aria-pressed={!value} className={!value ? 'is-active' : ''} type="button" onClick={() => onChange(false)}>
         关
       </button>
     </div>
@@ -964,6 +966,16 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const section = sections.find((item) => item.id === activeSection) ?? sections[0];
   const SectionIcon = section.icon;
 
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
   const body = (() => {
     if (activeSection === 'canvas') return <CanvasSettings settings={settings} setSetting={setSetting} />;
     if (activeSection === 'nodes') return <NodeSettings settings={settings} setSetting={setSetting} />;
@@ -975,14 +987,15 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   })();
 
   return (
-    <section className="settings-modal floating-panel" role="dialog" aria-modal="true" aria-label="设置">
+    <section className="settings-modal floating-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
       <aside className="settings-sidebar">
-        <h2>设置</h2>
+        <h2 id="settings-title">设置</h2>
         <nav>
           {sections.map((item) => {
             const Icon = item.icon;
             return (
               <button
+                aria-current={activeSection === item.id ? 'page' : undefined}
                 className={activeSection === item.id ? 'is-active' : ''}
                 key={item.id}
                 type="button"
@@ -1007,7 +1020,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
         </header>
         <div className="settings-scroll">{body}</div>
         <footer className="settings-footer">
-          <span aria-live="polite">{resetNotice || '设置会自动保存到 localStorage: selfcanvas.settings.v1'}</span>
+          <span aria-live="polite">{resetNotice || '更改会自动保存'}</span>
           <button
             type="button"
             onClick={() => {

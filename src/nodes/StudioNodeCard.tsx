@@ -10,17 +10,21 @@ import {
   LoaderCircle,
   Maximize2,
   Music,
+  Pause,
   Pencil,
   Play,
   Table2,
   Text,
   Upload,
   Video,
+  Volume2,
+  VolumeX,
   X,
   type LucideIcon,
 } from 'lucide-react';
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
+import { isLocallyDownloadableUrl, triggerMediaDownload } from '../services/artifactClient';
 import { useCanvasStore } from '../store/canvasStore';
 import { useSettingsStore } from '../store/settingsStore';
 import type { NodeKind, StoryboardDocument, StoryboardShot, StudioNode } from '../types';
@@ -69,7 +73,11 @@ const composerNodeKinds = new Set<NodeKind>(['text', 'image', 'video', 'audio', 
 
 function isInteractiveTarget(target: EventTarget | null) {
   if (!(target instanceof Element)) return false;
-  return Boolean(target.closest('button, input, textarea, select, .node-handle-hotspot, .react-flow__handle'));
+  return Boolean(
+    target.closest(
+      'button, input, textarea, select, video, audio, .video-preview, .audio-preview, .node-handle-hotspot, .react-flow__handle',
+    ),
+  );
 }
 
 function hasNodeOutput(node: StudioNode) {
@@ -284,7 +292,179 @@ function StoryboardPanel({ node }: { node: StudioNode }) {
   );
 }
 
+function formatMediaTime(value: number) {
+  if (!Number.isFinite(value) || value < 0) return '00:00';
+  const totalSeconds = Math.floor(value);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
+function MediaDownloadButton({ url }: { url: string | undefined }) {
+  const downloadable = isLocallyDownloadableUrl(url);
+  const title = downloadable ? '下载媒体' : '远程结果尚未落盘，暂不可下载';
+
+  return (
+    <button
+      className="media-download-button nodrag nowheel"
+      type="button"
+      aria-label={title}
+      title={title}
+      disabled={!downloadable}
+      onPointerDown={(event) => event.stopPropagation()}
+      onDoubleClick={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (url) triggerMediaDownload(url);
+      }}
+    >
+      <Download size={16} />
+    </button>
+  );
+}
+
+function VideoOutputPreview({ label, src, downloadUrl }: { label: string; src: string; downloadUrl?: string }) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [paused, setPaused] = useState(true);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [muted, setMuted] = useState(true);
+  const [volume, setVolume] = useState(1);
+
+  useEffect(() => {
+    setPaused(true);
+    setCurrentTime(0);
+    setDuration(0);
+    setMuted(true);
+    setVolume(1);
+  }, [src]);
+
+  const syncPlaybackState = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    setPaused(video.paused);
+    setCurrentTime(Number.isFinite(video.currentTime) ? video.currentTime : 0);
+    setDuration(Number.isFinite(video.duration) ? video.duration : 0);
+  };
+
+  const togglePlayback = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.paused) {
+      void video.play().catch(() => setPaused(true));
+    } else {
+      video.pause();
+    }
+  };
+
+  const progress = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
+  const volumeProgress = muted ? 0 : volume * 100;
+
+  return (
+    <div
+      className="media-preview video-preview nodrag nowheel"
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
+      onDoubleClick={(event) => event.stopPropagation()}
+    >
+      <video
+        ref={videoRef}
+        className="nodrag nowheel"
+        src={src}
+        muted={muted}
+        playsInline
+        preload="metadata"
+        aria-label="视频预览，点击播放或暂停"
+        onClick={togglePlayback}
+        onLoadedMetadata={syncPlaybackState}
+        onDurationChange={syncPlaybackState}
+        onTimeUpdate={syncPlaybackState}
+        onPlay={syncPlaybackState}
+        onPause={syncPlaybackState}
+        onEnded={syncPlaybackState}
+        onVolumeChange={() => {
+          const video = videoRef.current;
+          if (!video) return;
+          setMuted(video.muted);
+          setVolume(video.volume);
+        }}
+      />
+      <span className="video-result-label">{label}</span>
+      <MediaDownloadButton url={downloadUrl || src} />
+      <div className="video-controls nodrag nowheel" role="group" aria-label="视频播放控制">
+        <button
+          className="video-control-button"
+          type="button"
+          onClick={togglePlayback}
+          aria-label={paused ? '播放视频' : '暂停视频'}
+          title={paused ? '播放' : '暂停'}
+        >
+          {paused ? <Play size={16} fill="currentColor" /> : <Pause size={16} fill="currentColor" />}
+        </button>
+        <input
+          className="video-range video-seek"
+          type="range"
+          min="0"
+          max={duration > 0 ? duration : 0.01}
+          step="0.01"
+          value={Math.min(currentTime, duration > 0 ? duration : 0)}
+          aria-label="视频进度"
+          aria-valuetext={`${formatMediaTime(currentTime)} / ${formatMediaTime(duration)}`}
+          style={{ '--video-range-progress': `${progress}%` } as CSSProperties}
+          onChange={(event) => {
+            const video = videoRef.current;
+            if (!video) return;
+            const nextTime = Number(event.currentTarget.value);
+            video.currentTime = nextTime;
+            setCurrentTime(nextTime);
+          }}
+        />
+        <output className="video-time" aria-label="视频时间">
+          {formatMediaTime(currentTime)} / {formatMediaTime(duration)}
+        </output>
+        <button
+          className="video-control-button"
+          type="button"
+          onClick={() => {
+            const video = videoRef.current;
+            if (!video) return;
+            video.muted = !video.muted;
+            setMuted(video.muted);
+          }}
+          aria-label={muted ? '打开声音' : '静音'}
+          aria-pressed={muted}
+          title={muted ? '打开声音' : '静音'}
+        >
+          {muted ? <VolumeX size={17} /> : <Volume2 size={17} />}
+        </button>
+        <input
+          className="video-range video-volume"
+          type="range"
+          min="0"
+          max="1"
+          step="0.01"
+          value={muted ? 0 : volume}
+          aria-label="视频音量"
+          aria-valuetext={`${Math.round(volumeProgress)}%`}
+          style={{ '--video-range-progress': `${volumeProgress}%` } as CSSProperties}
+          onChange={(event) => {
+            const video = videoRef.current;
+            if (!video) return;
+            const nextVolume = Number(event.currentTarget.value);
+            video.volume = nextVolume;
+            video.muted = nextVolume === 0;
+            setVolume(nextVolume);
+            setMuted(video.muted);
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
 function OutputPreview({ node }: { node: StudioNode }) {
+  const updateNodeData = useCanvasStore((state) => state.updateNodeData);
   const { importedMedia, kind, outputs, prompt, status, progress } = node.data;
   const EmptyIcon = iconByKind[kind];
   if (kind === 'storyboard') return <StoryboardPanel node={node} />;
@@ -303,33 +483,89 @@ function OutputPreview({ node }: { node: StudioNode }) {
     );
   }
 
+  if (kind === 'text') {
+    return (
+      <textarea
+        className="node-text-editor nodrag nowheel"
+        value={outputs.text ?? ''}
+        placeholder="在这里直接填写或修改剧本…"
+        aria-label="剧本内容"
+        onChange={(event) => updateNodeData(node.id, {
+          outputs: { ...outputs, text: event.currentTarget.value },
+        })}
+        onPointerDown={(event) => event.stopPropagation()}
+        onKeyDown={(event) => event.stopPropagation()}
+      />
+    );
+  }
+
   if (outputs.imageUrl) {
     return (
-      <div className="media-preview image-preview">
+      <div className="media-preview image-preview nodrag nowheel">
         <img src={outputs.imageUrl} alt="generated preview" />
         <span>{importedMedia ? importedMediaLabel.image : '图像结果'}</span>
+        <MediaDownloadButton url={outputs.fileUrl || outputs.imageUrl} />
       </div>
     );
   }
 
   if (outputs.videoUrl) {
     return (
-      <div className="media-preview video-preview">
-        <video src={outputs.videoUrl} muted playsInline controls />
-        <div className="video-play">
-          <Play size={20} fill="currentColor" />
-        </div>
-        <span>{importedMedia ? importedMediaLabel.video : '视频结果'}</span>
-      </div>
+      <VideoOutputPreview
+        label={importedMedia ? importedMediaLabel.video : '视频结果'}
+        src={outputs.videoUrl}
+        downloadUrl={outputs.fileUrl}
+      />
     );
   }
 
   if (outputs.audioUrl) {
     return (
-      <div className="audio-preview">
+      <div
+        className="audio-preview nodrag nowheel"
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
+        onDoubleClick={(event) => event.stopPropagation()}
+      >
         <Music size={20} />
         <span>{outputs.text ?? '音频结果已生成'}</span>
-        <audio src={outputs.audioUrl} controls />
+        <audio className="nodrag nowheel" src={outputs.audioUrl} controls />
+      </div>
+    );
+  }
+
+  if (outputs.editPlan) {
+    return (
+      <div className="video-edit-plan-preview nodrag nowheel">
+        <div>
+          <strong>AI 剪辑方案已生成</strong>
+          <span>
+            {outputs.editPlan.clips.length} 个片段 ·{' '}
+            {outputs.editPlan.clips.some((clip) => clip.transition?.type === 'crossfade') ? '含交叉淡化' : '硬切'}
+          </span>
+        </div>
+        <ol>
+          {outputs.editPlan.clips.slice(0, 5).map((clip, index) => (
+            <li key={`${clip.referenceKey ?? clip.sourceIndex ?? index}-${index}`}>
+              <span>{index + 1}</span>
+              <strong>{clip.referenceKey ?? `素材 ${Number(clip.sourceIndex ?? index) + 1}`}</strong>
+              <small>
+                {typeof clip.in === 'number'
+                  ? `${clip.in.toFixed(1)}s`
+                  : typeof clip.inMs === 'number'
+                    ? `${(clip.inMs / 1000).toFixed(1)}s`
+                    : '开头'}{' '}
+                →{' '}
+                {typeof clip.out === 'number'
+                  ? `${clip.out.toFixed(1)}s`
+                  : typeof clip.outMs === 'number'
+                    ? `${(clip.outMs / 1000).toFixed(1)}s`
+                    : '结尾'}
+              </small>
+            </li>
+          ))}
+        </ol>
+        <span className="video-edit-plan-hint">点击下方发送按钮按此方案渲染</span>
       </div>
     );
   }
@@ -349,7 +585,7 @@ function OutputPreview({ node }: { node: StudioNode }) {
   if (!composerNodeKinds.has(kind) && prompt.trim()) {
     return (
       <div className={`prompt-preview prompt-preview-${kind}`}>
-        {kind !== 'text' && <EmptyIcon size={32} />}
+        <EmptyIcon size={32} />
         <strong>{prompt}</strong>
         <span>输入提示词开始创作</span>
       </div>

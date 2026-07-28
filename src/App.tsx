@@ -58,8 +58,10 @@ import { QuickChatPanel } from './components/QuickChatPanel';
 import { RailPanels } from './components/RailPanels';
 import { TopBar } from './components/TopBar';
 import { StudioNodeCard } from './nodes/StudioNodeCard';
+import { browserApiFetch } from './services/browserSession';
 import { COMPLETION_NOTICE_EVENT, type CompletionNoticeDetail } from './services/completionNotifier';
-import { classifyMediaFile, mediaFileAccept, uploadMediaFile } from './services/mediaImportClient';
+import { classifyMediaFile, imageFilesFromClipboard, mediaFileAccept, uploadMediaFile } from './services/mediaImportClient';
+import { projectRepository } from './services/projectRepository';
 import { useCanvasStore, type NodeAlignment } from './store/canvasStore';
 import { useSettingsStore } from './store/settingsStore';
 import type { CanvasGroup, ImportedMedia, ImportedMediaType, NodeKind, NodeOutput, StudioEdge, StudioNode } from './types';
@@ -71,6 +73,10 @@ const MEDIA_IMPORT_CONCURRENCY = 3;
 const MEDIA_IMPORT_CELL_WIDTH = 364;
 const MEDIA_IMPORT_CELL_HEIGHT = 284;
 
+function isMediaPlaybackTarget(target: EventTarget | null) {
+  return target instanceof Element && Boolean(target.closest('video, audio, .video-preview, .audio-preview'));
+}
+
 interface ImportNotice {
   message: string;
   tone: 'info' | 'success' | 'error';
@@ -80,6 +86,7 @@ interface MediaImportJob {
   file: File;
   type: ImportedMediaType;
   nodeId: string;
+  canvasId: string;
 }
 
 interface AlignmentGuideState {
@@ -481,6 +488,9 @@ function CanvasWorkspace() {
   const onEdgesChange = useCanvasStore((state) => state.onEdgesChange);
   const onConnect = useCanvasStore((state) => state.onConnect);
   const setViewport = useCanvasStore((state) => state.setViewport);
+  const revealRequest = useCanvasStore((state) => state.revealRequest);
+  const revealNode = useCanvasStore((state) => state.revealNode);
+  const clearRevealRequest = useCanvasStore((state) => state.clearRevealRequest);
   const setNodePositions = useCanvasStore((state) => state.setNodePositions);
   const alignSelectedNodes = useCanvasStore((state) => state.alignSelectedNodes);
   const saveNow = useCanvasStore((state) => state.saveNow);
@@ -505,6 +515,7 @@ function CanvasWorkspace() {
   const createInputNode = useCanvasStore((state) => state.createInputNode);
   const createReferencedNode = useCanvasStore((state) => state.createReferencedNode);
   const createReferencedNodeFromGroup = useCanvasStore((state) => state.createReferencedNodeFromGroup);
+  const hydrateProjectFromServer = useCanvasStore((state) => state.hydrateProjectFromServer);
   const referenceSelectionIds = useCanvasStore((state) => state.referenceSelectionIds);
   const setQuickPanelOpen = useCanvasStore((state) => state.setQuickPanelOpen);
   const settings = useSettingsStore((state) => state.settings);
@@ -524,11 +535,108 @@ function CanvasWorkspace() {
   const addPanelCloseTimerRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const fileDragDepthRef = useRef(0);
+  const clipboardAnchorRef = useRef({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
   const importNoticeTimerRef = useRef<number | null>(null);
+  const remoteFocusRequestRef = useRef('');
   const [groupConnectionDrag, setGroupConnectionDrag] = useState<GroupConnectionDragState | null>(null);
   const viewport = useViewport();
   const { zoom } = viewport;
-  const { fitView, screenToFlowPosition, zoomIn, zoomOut, zoomTo } = useReactFlow<StudioNode, StudioEdge>();
+
+  useEffect(() => {
+    void hydrateProjectFromServer();
+    const refreshSharedProject = () => {
+      if (document.visibilityState === 'visible') void hydrateProjectFromServer();
+    };
+    const flushProject = () => saveNow();
+    window.addEventListener('focus', refreshSharedProject);
+    document.addEventListener('visibilitychange', refreshSharedProject);
+    window.addEventListener('pagehide', flushProject);
+    return () => {
+      window.removeEventListener('focus', refreshSharedProject);
+      document.removeEventListener('visibilitychange', refreshSharedProject);
+      window.removeEventListener('pagehide', flushProject);
+    };
+  }, [hydrateProjectFromServer, saveNow]);
+
+  useEffect(() => {
+    let stopped = false;
+    let controller: AbortController | null = null;
+    const watchProject = async () => {
+      while (!stopped) {
+        controller = new AbortController();
+        try {
+          const revision = projectRepository.getRevision();
+          const response = await browserApiFetch(`/api/v2/events?sinceRevision=${revision}`, {
+            cache: 'no-store',
+            signal: controller.signal,
+          });
+          if (!response.ok) throw new Error(`画布事件订阅失败 (${response.status})`);
+          const payload = await response.text();
+          const dataLine = payload.split(/\r?\n/).find((line) => line.startsWith('data: '));
+          if (dataLine) {
+            const event = JSON.parse(dataLine.slice(6)) as {
+              revision?: number;
+              canvasId?: string;
+              focusNodeId?: string;
+              focusRequestId?: string;
+            };
+            if (Number(event.revision || 0) > projectRepository.getRevision()) {
+              await hydrateProjectFromServer();
+            }
+            const focusRequestId = event.focusRequestId || `${event.revision || 0}:${event.focusNodeId || ''}`;
+            if (event.focusNodeId && remoteFocusRequestRef.current !== focusRequestId) {
+              remoteFocusRequestRef.current = focusRequestId;
+              revealNode(event.focusNodeId, event.canvasId);
+            }
+          }
+        } catch (error) {
+          if (stopped || (error instanceof DOMException && error.name === 'AbortError')) return;
+          await new Promise((resolve) => window.setTimeout(resolve, 1500));
+        }
+      }
+    };
+    void watchProject();
+    return () => {
+      stopped = true;
+      controller?.abort();
+    };
+  }, [hydrateProjectFromServer, revealNode]);
+  const { fitView, screenToFlowPosition, setCenter, zoomIn, zoomOut, zoomTo } = useReactFlow<StudioNode, StudioEdge>();
+
+  useEffect(() => {
+    if (!revealRequest || revealRequest.canvasId !== activeCanvas.id) return;
+    const node = activeCanvas.nodes.find((candidate) => candidate.id === revealRequest.nodeId);
+    if (!node) {
+      clearRevealRequest(revealRequest.nonce);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      const size = measuredNodeSize(node);
+      const targetZoom = Math.min(1.05, Math.max(0.72, viewport.zoom));
+      clearRevealRequest(revealRequest.nonce);
+      void setCenter(node.position.x + size.width / 2, node.position.y + size.height / 2, {
+        zoom: targetZoom,
+        duration: 520,
+      });
+    }, 70);
+    return () => window.clearTimeout(timer);
+  }, [activeCanvas.id, activeCanvas.nodes, clearRevealRequest, revealRequest, setCenter, viewport.zoom]);
+
+  useEffect(() => {
+    const handleExternalReveal = (event: Event) => {
+      const detail = (event as CustomEvent<{ canvasId?: string; nodeId?: string }>).detail;
+      if (detail?.nodeId) revealNode(detail.nodeId, detail.canvasId);
+    };
+    window.addEventListener('selfcanvas:reveal-node', handleExternalReveal);
+    return () => window.removeEventListener('selfcanvas:reveal-node', handleExternalReveal);
+  }, [revealNode]);
+
+  useEffect(() => {
+    if (!activeCanvas.focusNodeId) return;
+    if (activeCanvas.focusRequestId && remoteFocusRequestRef.current === activeCanvas.focusRequestId) return;
+    if (activeCanvas.focusRequestId) remoteFocusRequestRef.current = activeCanvas.focusRequestId;
+    revealNode(activeCanvas.focusNodeId, activeCanvas.id);
+  }, [activeCanvas.focusNodeId, activeCanvas.focusRequestId, activeCanvas.id, revealNode]);
 
   const nodeTypes = useMemo<NodeTypes>(() => ({ studioNode: StudioNodeCard }), []);
   const zoomPercent = normalizedZoomPercent(zoom);
@@ -564,6 +672,7 @@ function CanvasWorkspace() {
   const displayNodes = useMemo(
     () => activeCanvas.nodes.map((node) => ({
       ...node,
+      selected: selectedNodeIds.includes(node.id),
       data: {
         ...node.data,
         uiRelation: relatedNodeIds.has(node.id)
@@ -573,18 +682,19 @@ function CanvasWorkspace() {
             : undefined,
       },
     })),
-    [activeCanvas.nodes, relatedEdgeIds.size, relatedNodeIds, selectedNodeId],
+    [activeCanvas.nodes, relatedEdgeIds.size, relatedNodeIds, selectedNodeId, selectedNodeIds],
   );
   const displayEdges = useMemo(
     () => visibleEdges.map((edge) => ({
       ...edge,
+      selected: selectedEdgeId === edge.id,
       className: relatedEdgeIds.has(edge.id)
         ? 'is-related'
         : relatedEdgeIds.size
           ? 'is-dimmed'
           : undefined,
     })),
-    [relatedEdgeIds, visibleEdges],
+    [relatedEdgeIds, selectedEdgeId, visibleEdges],
   );
   const groupEdges = useMemo(
     () => activeCanvas.edges.filter(isGroupEdge),
@@ -642,7 +752,7 @@ function CanvasWorkspace() {
   }, []);
 
   const importMediaFiles = useCallback(
-    async (files: File[], anchor: XYPosition) => {
+    async (files: File[], anchor: XYPosition, source = '文件') => {
       if (!files.length) {
         showImportNotice('没有发现可导入的媒体文件。暂不支持递归导入整个文件夹。', 'error');
         return;
@@ -660,10 +770,12 @@ function CanvasWorkspace() {
 
       setAddPanelOpen(false);
       setQuickPanelOpen(false);
+      const targetCanvasId = activeCanvas.id;
       const positions = importedMediaPositions(anchor, accepted.length);
       const jobs: MediaImportJob[] = accepted.map(({ file, type }, index) => ({
         file,
         type,
+        canvasId: targetCanvasId,
         nodeId: createImportedMediaNode(
           {
             name: file.name,
@@ -675,16 +787,16 @@ function CanvasWorkspace() {
         ),
       }));
 
-      showImportNotice(`正在导入 ${jobs.length} 个媒体文件…`, 'info');
+      showImportNotice(`正在从${source}导入 ${jobs.length} 个媒体文件…`, 'info');
       let succeeded = 0;
       let failed = 0;
-      await runWithConcurrency(jobs, MEDIA_IMPORT_CONCURRENCY, async ({ file, nodeId }) => {
+      await runWithConcurrency(jobs, MEDIA_IMPORT_CONCURRENCY, async ({ file, nodeId, canvasId }) => {
         let lastProgress = 0;
         try {
           const media = await uploadMediaFile(file, (progress) => {
             if (progress < 99 && progress - lastProgress < 2) return;
             lastProgress = progress;
-            updateNodeData(nodeId, { progress });
+            updateNodeData(nodeId, { progress }, canvasId);
           });
           updateNodeData(nodeId, {
             status: 'success',
@@ -692,7 +804,7 @@ function CanvasWorkspace() {
             importedMedia: media,
             outputs: importedMediaOutputs(media),
             error: '',
-          });
+          }, canvasId);
           succeeded += 1;
         } catch (error) {
           failed += 1;
@@ -704,7 +816,7 @@ function CanvasWorkspace() {
               text: '文件未能复制到项目目录。',
             },
             error: error instanceof Error ? error.message : String(error),
-          });
+          }, canvasId);
         }
       });
 
@@ -713,12 +825,49 @@ function CanvasWorkspace() {
         failed ? `${failed} 个失败` : '',
         skippedCount ? `跳过 ${skippedCount} 个不支持的文件` : '',
       ].filter(Boolean).join('，');
-      showImportNotice(summary || '媒体导入完成。', failed ? (succeeded ? 'info' : 'error') : 'success');
+      const sourceSummary = source === '剪贴板' && succeeded
+        ? [`已从剪贴板复制 ${succeeded} 张图片到画布`, failed ? `${failed} 张失败` : '', skippedCount ? `跳过 ${skippedCount} 个项目` : ''].filter(Boolean).join('，')
+        : summary;
+      showImportNotice(sourceSummary || '媒体导入完成。', failed ? (succeeded ? 'info' : 'error') : 'success');
     },
-    [createImportedMediaNode, setAddPanelOpen, setQuickPanelOpen, showImportNotice, updateNodeData],
+    [activeCanvas.id, createImportedMediaNode, setAddPanelOpen, setQuickPanelOpen, showImportNotice, updateNodeData],
   );
 
   const requestMediaImport = useCallback(() => fileInputRef.current?.click(), []);
+
+  useEffect(() => {
+    const rememberPointer = (event: PointerEvent) => {
+      clipboardAnchorRef.current = { x: event.clientX, y: event.clientY };
+    };
+    window.addEventListener('pointermove', rememberPointer, { passive: true });
+    return () => window.removeEventListener('pointermove', rememberPointer);
+  }, []);
+
+  useEffect(() => {
+    const handlePaste = (event: ClipboardEvent) => {
+      if (isEditableTarget(event.target) || !event.clipboardData) return;
+      const types = Array.from(event.clipboardData.types);
+      const mayContainImages = types.some((type) => type.startsWith('image/') || type === 'Files' || type === 'text/html' || type === 'text/uri-list');
+      if (!mayContainImages) return;
+      event.preventDefault();
+      const clipboardData = event.clipboardData;
+      void (async () => {
+        const files = await imageFilesFromClipboard(clipboardData);
+        if (!files.length) {
+          showImportNotice('剪贴板里没有可读取的图片。请使用“复制图片”，或从 Finder 复制图片文件。', 'error');
+          return;
+        }
+        const pointer = clipboardAnchorRef.current;
+        const anchor = screenToFlowPosition({
+          x: Math.max(112, Math.min(pointer.x, window.innerWidth - 24)),
+          y: Math.max(76, Math.min(pointer.y, window.innerHeight - 84)),
+        });
+        await importMediaFiles(files, anchor, '剪贴板');
+      })();
+    };
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, [importMediaFiles, screenToFlowPosition, showImportNotice]);
 
   const handleFileInputChange = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
@@ -799,7 +948,8 @@ function CanvasWorkspace() {
   );
 
   const handleNodeClick = useCallback(
-    (_event: React.MouseEvent, node: StudioNode) => {
+    (event: React.MouseEvent, node: StudioNode) => {
+      if (isMediaPlaybackTarget(event.target)) return;
       focusNodeAsTarget(node.id);
       setConnectionMenu(null);
       setSelectedEdgeId('');
@@ -849,10 +999,13 @@ function CanvasWorkspace() {
       setSelectedEdgeId('');
       onConnect(normalizedConnection);
       if (normalizedConnection.source && normalizedConnection.target) {
-        attachReferencesToNode(normalizedConnection.target, [normalizedConnection.source, ...groupIds]);
+        const targetNode = activeCanvas.nodes.find((node) => node.id === normalizedConnection.target);
+        if (targetNode?.data.kind !== 'video') {
+          attachReferencesToNode(normalizedConnection.target, [normalizedConnection.source, ...groupIds]);
+        }
       }
     },
-    [attachReferencesToNode, onConnect, referenceSelectionIds],
+    [activeCanvas.nodes, attachReferencesToNode, onConnect, referenceSelectionIds],
   );
 
   const handleConnectStart = useCallback<OnConnectStart>((event, params) => {
@@ -1157,6 +1310,7 @@ function CanvasWorkspace() {
       {addPanelOpen && (
         <section
           className="floating-panel add-panel-wrap"
+          aria-label="添加节点"
           onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => event.stopPropagation()}
         >
@@ -1509,7 +1663,9 @@ function CanvasWorkspace() {
         className="orb-generate"
         type="button"
         onClick={() => setQuickPanelOpen(!quickPanelOpen)}
-        title="快捷生成"
+        aria-expanded={quickPanelOpen}
+        aria-label={quickPanelOpen ? '快捷生成入口（已打开）' : '打开画布助手'}
+        title={quickPanelOpen ? '快捷生成入口（已打开）' : '打开画布助手'}
       >
         <Sparkles size={27} />
       </button>

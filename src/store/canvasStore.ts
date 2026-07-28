@@ -10,11 +10,14 @@ import {
 import { create } from 'zustand';
 import { notifyGenerationComplete, prepareCompletionFeedback } from '../services/completionNotifier';
 import { generationClient } from '../services/generationClient';
-import { projectRepository } from '../services/projectRepository';
+import { generationSyncError, isMissingCanvasNodeError } from '../services/generationRunPolicy';
+import { projectRepository, projectServerJobState } from '../services/projectRepository';
+import { persistentEdgeChanges, persistentNodeChanges } from './nodeChangePolicy';
 import { useSettingsStore, type StudioSettings } from './settingsStore';
 import type {
   CanvasGroup,
   CanvasGroupBounds,
+  GenerationJob,
   ImportedMedia,
   NodeReference,
   NodeKind,
@@ -66,8 +69,8 @@ const presets: Record<NodeKind, NodePreset> = {
   audio: {
     kind: 'audio',
     title: '生成音频',
-    prompt: '温柔旁白，轻微空间混响，适合短片开场',
-    model: 'anycap-audio',
+    prompt: '生成温柔女声旁白，轻微空间混响，适合短片开场',
+    model: 'doubao-seed-audio-1-0',
     provider: 'AnyCap',
     width: 286,
     height: 226,
@@ -130,6 +133,12 @@ const presets: Record<NodeKind, NodePreset> = {
 
 export type NodeAlignment = 'left' | 'center-x' | 'right' | 'top' | 'center-y' | 'bottom' | 'distribute-x' | 'distribute-y';
 
+export interface CanvasRevealRequest {
+  canvasId: string;
+  nodeId: string;
+  nonce: number;
+}
+
 interface CanvasStore {
   project: StudioProject;
   activeCanvas: StudioCanvas;
@@ -140,6 +149,7 @@ interface CanvasStore {
   addPanelOpen: boolean;
   quickPanelOpen: boolean;
   lastSavedAt: string;
+  revealRequest: CanvasRevealRequest | null;
   onNodesChange: (changes: NodeChange<StudioNode>[]) => void;
   onEdgesChange: (changes: EdgeChange<StudioEdge>[]) => void;
   onConnect: (connection: Connection) => void;
@@ -152,8 +162,10 @@ interface CanvasStore {
     media: Pick<ImportedMedia, 'name' | 'type' | 'mimeType' | 'size'>,
     position: { x: number; y: number },
   ) => string;
-  updateNodeData: (nodeId: string, patch: Partial<StudioNode['data']>) => void;
+  updateNodeData: (nodeId: string, patch: Partial<StudioNode['data']>, canvasId?: string) => void;
   selectNode: (nodeId: string) => void;
+  revealNode: (nodeId: string, canvasId?: string) => void;
+  clearRevealRequest: (nonce: number) => void;
   focusNodeAsTarget: (nodeId: string) => void;
   setSelectedNodes: (nodeIds: string[]) => void;
   selectGroup: (groupId: string) => void;
@@ -179,7 +191,13 @@ interface CanvasStore {
   createReferencedNodeFromGroup: (kind: NodeKind, groupId: string, position?: { x: number; y: number }) => void;
   createNodeFromStoryboardShot: (storyboardNodeId: string, shot: StoryboardShot, kind: 'image' | 'video') => void;
   runNode: (nodeId: string) => Promise<void>;
+  reconcileGenerationJobs: (jobs: GenerationJob[]) => void;
+  resumeGenerationJobs: () => void;
   createCanvas: () => void;
+  switchCanvas: (canvasId: string) => void;
+  renameCanvas: (canvasId: string, name: string) => void;
+  hydrateProjectFromServer: () => Promise<void>;
+  resolveSyncConflict: () => Promise<boolean>;
   setAddPanelOpen: (open: boolean) => void;
   setQuickPanelOpen: (open: boolean) => void;
   resetProject: () => void;
@@ -194,11 +212,12 @@ function newId(prefix: string) {
 }
 
 function defaultModelForKind(kind: NodeKind, model: string) {
+  if (kind === 'audio' && model === 'anycap-audio') return 'elevanlabs-music';
   if (model && !model.startsWith('mock-') && !model.startsWith('local-')) return model;
   if (kind === 'text') return 'gpt-4o-mini';
   if (kind === 'image') return 'gpt-image-2';
   if (kind === 'video') return 'seedance-2-fast';
-  if (kind === 'audio') return 'anycap-audio';
+  if (kind === 'audio') return 'doubao-seed-audio-1-0';
   if (kind === 'storyboard') return 'gpt-5.5';
   return model || 'local-preview';
 }
@@ -231,9 +250,27 @@ function defaultProviderOptions(kind: NodeKind, model: string): ProviderOptions 
       aspectRatio: 'adaptive',
       generateAudio: true,
       format: 'mp4',
+      operation: 'generate',
+      transition: 'cut',
+      transitionDuration: 0.5,
+      audioPolicy: 'keep',
     };
   }
   if (kind === 'audio') {
+    if (resolvedModel === 'doubao-seed-audio-1-0') {
+      return {
+        providerTool: 'anycap',
+        model: resolvedModel,
+        mode: 'text-to-audio',
+        format: 'mp3',
+        sampleRate: 24000,
+        speechRate: 0,
+        pitchRate: 0,
+        loudnessRate: 0,
+        enableSubtitle: false,
+        speakerIds: [],
+      };
+    }
     return {
       providerTool: 'anycap',
       model: resolvedModel,
@@ -266,36 +303,81 @@ function defaultProviderForKind(kind: NodeKind, provider: string) {
   return provider || 'Local';
 }
 
+const importedMediaTitle = {
+  image: '图片',
+  video: '视频',
+  audio: '音频',
+} as const;
+
+function normalizedImportedMediaTitle(node: StudioNode) {
+  const media = node.data.importedMedia;
+  if (!media) return node.data.title;
+  const originalName = media.name || node.data.outputs?.assetName || '';
+  return !node.data.title || node.data.title === originalName || node.data.title === node.data.outputs?.assetName
+    ? importedMediaTitle[media.type]
+    : node.data.title;
+}
+
 function normalizeCanvas(canvas: Partial<StudioCanvas>, index: number): StudioCanvas {
   const nodes = Array.isArray(canvas.nodes) ? canvas.nodes : [];
   const edges = Array.isArray(canvas.edges) ? canvas.edges : [];
   const groups = normalizeGroups(Array.isArray(canvas.groups) ? canvas.groups : [], nodes);
   const viewport = canvas.viewport ?? { x: 0, y: 0, zoom: 0.84 };
+  const timestamp = canvas.createdAt || canvas.updatedAt || nowIso();
+  const renamedImportedNodes = new Map<string, { previousTitle: string; title: string }>();
+  const normalizedNodes = nodes.map((node) => {
+    const title = normalizedImportedMediaTitle(node);
+    if (title !== node.data.title) renamedImportedNodes.set(node.id, { previousTitle: node.data.title, title });
+    const model = defaultModelForKind(node.data.kind, String(node.data.model || ''));
+    const providerOptions = {
+      ...defaultProviderOptions(node.data.kind, model),
+      ...(node.data.providerOptions ?? {}),
+    };
+    const optionModel = defaultModelForKind(node.data.kind, String(providerOptions.model || model));
+    return {
+      ...node,
+      selected: false,
+      data: {
+        ...node.data,
+        title,
+        model: optionModel,
+        provider: defaultProviderForKind(node.data.kind, String(node.data.provider || '')),
+        inputs: Array.isArray(node.data.inputs) ? node.data.inputs : [],
+        outputs: node.data.outputs ?? {},
+        references: node.data.references ?? [],
+        providerOptions: { ...providerOptions, model: optionModel },
+        error: node.data.error ?? '',
+      },
+    };
+  });
   return {
     id: canvas.id || `canvas_${index + 1}`,
     name: canvas.name || `画布 ${index + 1}`,
+    createdAt: timestamp,
+    updatedAt: canvas.updatedAt || timestamp,
     viewport,
+    focusNodeId: typeof canvas.focusNodeId === 'string' ? canvas.focusNodeId : undefined,
+    focusRequestId: typeof canvas.focusRequestId === 'string' ? canvas.focusRequestId : undefined,
+    focusRevision: Number.isFinite(Number(canvas.focusRevision)) ? Number(canvas.focusRevision) : undefined,
     edges,
     groups,
-    nodes: nodes.map((node) => {
-      const model = defaultModelForKind(node.data.kind, String(node.data.model || ''));
-      const providerOptions = {
-        ...defaultProviderOptions(node.data.kind, model),
-        ...(node.data.providerOptions ?? {}),
-      };
-      const optionModel = defaultModelForKind(node.data.kind, String(providerOptions.model || model));
+    nodes: normalizedNodes.map((node) => {
+      const references = node.data.references.map((reference) => {
+        const renamed = renamedImportedNodes.get(reference.nodeId);
+        return renamed && reference.title === renamed.previousTitle
+          ? { ...reference, title: renamed.title }
+          : reference;
+      });
+      const prompt = [...renamedImportedNodes.values()].reduce(
+        (value, renamed) => value.replaceAll(`@${renamed.previousTitle}`, `@${renamed.title}`),
+        node.data.prompt,
+      );
       return {
         ...node,
-        selected: false,
         data: {
           ...node.data,
-          model: optionModel,
-          provider: defaultProviderForKind(node.data.kind, String(node.data.provider || '')),
-          inputs: Array.isArray(node.data.inputs) ? node.data.inputs : [],
-          outputs: node.data.outputs ?? {},
-          references: node.data.references ?? [],
-          providerOptions: { ...providerOptions, model: optionModel },
-          error: node.data.error ?? '',
+          prompt,
+          references,
         },
       };
     }),
@@ -410,7 +492,7 @@ function makeImportedMediaNode(
     height: media.type === 'audio' ? 190 : 260,
     data: {
       kind: 'asset',
-      title: media.name,
+      title: importedMediaTitle[media.type],
       prompt: '',
       status: 'running',
       progress: 1,
@@ -468,6 +550,8 @@ function createStarterProject(): StudioProject {
       {
         id: 'canvas_main',
         name: '默认画布',
+        createdAt,
+        updatedAt: createdAt,
         nodes,
         edges,
         groups: [],
@@ -477,11 +561,13 @@ function createStarterProject(): StudioProject {
   };
 }
 
+const hadLocalProjectAtStartup = projectRepository.hasLocalProject();
+
 function resolveProject() {
   const loadedProject = projectRepository.load();
   if (!loadedProject) return createStarterProject();
   const normalizedProject = normalizeProject(loadedProject);
-  projectRepository.save(normalizedProject);
+  projectRepository.saveLocal(normalizedProject);
   return normalizedProject;
 }
 
@@ -498,6 +584,82 @@ function saveProject(project: StudioProject) {
 
 function pause(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+const activeGenerationPolls = new Set<string>();
+
+function currentNodeForJob(project: StudioProject, canvasId: string, nodeId: string, jobId: string) {
+  const canvas = project.canvases.find((item) => item.id === canvasId);
+  const node = canvas?.nodes.find((item) => item.id === nodeId);
+  return node && String(node.data.lastJobId || '') === jobId ? node : null;
+}
+
+function generationOutputEqual(left: unknown, right: unknown) {
+  if (left === right) return true;
+  try {
+    return JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
+  }
+}
+
+function projectGenerationJob(node: StudioNode, job: GenerationJob): StudioNode {
+  if (!job.id || String(node.data.lastJobId || '') !== job.id) return node;
+  if (job.status === 'queued' || job.status === 'running') {
+    const progress = Math.max(3, Math.min(99, Number(job.progress || 0)));
+    if (
+      node.data.status === 'success' ||
+      node.data.status === 'error' ||
+      (node.data.status === 'running' && Number(node.data.progress || 0) >= progress)
+    ) return node;
+    return {
+      ...node,
+      data: {
+        ...node.data,
+        status: 'running',
+        progress,
+        provider: job.provider || node.data.provider,
+        model: job.model || node.data.model,
+        error: '',
+      },
+    };
+  }
+
+  if (job.status === 'success') {
+    const outputs = job.result ?? {};
+    if (
+      node.data.status === 'success' &&
+      Number(node.data.progress || 0) === 100 &&
+      !node.data.error &&
+      generationOutputEqual(node.data.outputs ?? {}, outputs)
+    ) return node;
+    return {
+      ...node,
+      data: {
+        ...node.data,
+        status: 'success',
+        progress: 100,
+        outputs,
+        provider: job.provider || node.data.provider,
+        model: job.model || node.data.model,
+        error: '',
+      },
+    };
+  }
+
+  const error = job.error || (job.status === 'canceled' ? '任务已取消' : '生成任务失败');
+  if (node.data.status === 'error' && node.data.error === error && Number(node.data.progress || 0) === 0) return node;
+  return {
+    ...node,
+    data: {
+      ...node.data,
+      status: 'error',
+      progress: 0,
+      provider: job.provider || node.data.provider,
+      model: job.model || node.data.model,
+      error,
+    },
+  };
 }
 
 function readableGenerationError(error: unknown) {
@@ -517,7 +679,7 @@ function readableGenerationError(error: unknown) {
 function updateActiveCanvas(project: StudioProject, updater: (canvas: StudioCanvas) => StudioCanvas) {
   const updatedAt = nowIso();
   const canvases = project.canvases.map((canvas) =>
-    canvas.id === project.activeCanvasId ? updater(canvas) : canvas,
+    canvas.id === project.activeCanvasId ? { ...updater(canvas), updatedAt } : canvas,
   );
   return { ...project, canvases, updatedAt };
 }
@@ -692,6 +854,8 @@ function removeReferencesForEdges(canvas: StudioCanvas, removedEdges: StudioEdge
   if (!removedEdges.length) return canvas;
   const removalsByTarget = new Map<string, NodeReference[]>();
   for (const edge of removedEdges) {
+    const targetNode = canvas.nodes.find((node) => node.id === edge.target);
+    if (targetNode?.data.kind === 'video') continue;
     const references = referencesForEdge(canvas, edge);
     if (!references.length) continue;
     removalsByTarget.set(edge.target, [...(removalsByTarget.get(edge.target) ?? []), ...references]);
@@ -717,6 +881,10 @@ function removeReferencesForEdges(canvas: StudioCanvas, removedEdges: StudioEdge
 }
 
 const initialProject = resolveProject();
+let projectHydrationInFlight: Promise<StudioProject | null> | null = null;
+let projectHydrationSourceProject: StudioProject | null = null;
+let projectHydrationAttempted = false;
+let revealRequestNonce = 0;
 
 export const useCanvasStore = create<CanvasStore>((set, get) => ({
   project: initialProject,
@@ -728,13 +896,16 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
   addPanelOpen: false,
   quickPanelOpen: false,
   lastSavedAt: initialProject.updatedAt,
+  revealRequest: null,
 
   onNodesChange: (changes) => {
+    const durableChanges = persistentNodeChanges(changes);
+    if (!durableChanges.length) return;
     set((state) => {
       const project = updateActiveCanvas(state.project, (canvas) => {
         const refreshed = refreshCanvasGroups({
           ...canvas,
-          nodes: applyNodeChanges(changes, canvas.nodes),
+          nodes: applyNodeChanges(durableChanges, canvas.nodes),
         });
         return {
           ...refreshed,
@@ -746,14 +917,16 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
   },
 
   onEdgesChange: (changes) => {
+    const durableChanges = persistentEdgeChanges(changes);
+    if (!durableChanges.length) return;
     set((state) => {
-      const removedIds = new Set(changes.filter((change) => change.type === 'remove').map((change) => change.id));
+      const removedIds = new Set(durableChanges.filter((change) => change.type === 'remove').map((change) => change.id));
       const project = updateActiveCanvas(state.project, (canvas) => {
         const removedEdges = canvas.edges.filter((edge) => removedIds.has(edge.id));
         return removeReferencesForEdges(
           {
             ...canvas,
-            edges: applyEdgeChanges(changes, canvas.edges),
+            edges: applyEdgeChanges(durableChanges, canvas.edges),
           },
           removedEdges,
         );
@@ -855,7 +1028,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
   },
 
   saveNow: () => {
-    set((state) => ({ lastSavedAt: saveProject(state.project) }));
+    void projectRepository.flush();
   },
 
   addNode: (kind, position) => {
@@ -903,14 +1076,25 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     return nodeId;
   },
 
-  updateNodeData: (nodeId, patch) => {
+  updateNodeData: (nodeId, patch, canvasId) => {
     set((state) => {
-      const project = updateActiveCanvas(state.project, (canvas) => ({
-        ...canvas,
-        nodes: canvas.nodes.map((node) =>
-          node.id === nodeId ? { ...node, data: { ...node.data, ...patch } } : node,
+      const targetCanvasId = canvasId || state.project.activeCanvasId;
+      const updatedAt = nowIso();
+      const project: StudioProject = {
+        ...state.project,
+        updatedAt,
+        canvases: state.project.canvases.map((canvas) =>
+          canvas.id === targetCanvasId
+            ? {
+                ...canvas,
+                updatedAt,
+                nodes: canvas.nodes.map((node) =>
+                  node.id === nodeId ? { ...node, data: { ...node.data, ...patch } } : node,
+                ),
+              }
+            : canvas,
         ),
-      }));
+      };
       return { project, activeCanvas: activeCanvasOf(project), lastSavedAt: saveProject(project) };
     });
   },
@@ -923,41 +1107,53 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
       referenceSelectionIds: nodeId ? state.referenceSelectionIds : [],
     })),
 
-  setSelectedNodes: (nodeIds) => {
-    const uniqueIds = [...new Set(nodeIds)];
-    const selectedSet = new Set(uniqueIds);
+  revealNode: (nodeId, canvasId) => {
     set((state) => {
-      const project = updateActiveCanvas(state.project, (canvas) => ({
-        ...canvas,
-        nodes: canvas.nodes.map((node) => ({ ...node, selected: selectedSet.has(node.id) })),
-      }));
+      const targetCanvasId = canvasId || state.project.activeCanvasId;
+      const targetCanvas = state.project.canvases.find((canvas) => canvas.id === targetCanvasId);
+      if (!targetCanvas?.nodes.some((node) => node.id === nodeId)) return state;
+      const canvasChanged = targetCanvasId !== state.project.activeCanvasId;
+      const project = canvasChanged
+        ? { ...state.project, activeCanvasId: targetCanvasId, updatedAt: nowIso() }
+        : state.project;
+      revealRequestNonce += 1;
       return {
         project,
         activeCanvas: activeCanvasOf(project),
+        selectedNodeId: nodeId,
+        selectedNodeIds: [nodeId],
+        selectedGroupId: '',
+        referenceSelectionIds: [],
+        addPanelOpen: false,
+        quickPanelOpen: false,
+        revealRequest: { canvasId: targetCanvasId, nodeId, nonce: revealRequestNonce },
+        lastSavedAt: canvasChanged ? saveProject(project) : state.lastSavedAt,
+      };
+    });
+  },
+
+  clearRevealRequest: (nonce) => {
+    set((state) => state.revealRequest?.nonce === nonce ? { revealRequest: null } : state);
+  },
+
+  setSelectedNodes: (nodeIds) => {
+    const uniqueIds = [...new Set(nodeIds)];
+    set((state) => ({
         selectedNodeId: uniqueIds.length === 1 ? uniqueIds[0] : '',
         selectedNodeIds: uniqueIds,
         selectedGroupId: '',
         referenceSelectionIds: uniqueIds.length > 1 ? uniqueIds : state.referenceSelectionIds,
-        lastSavedAt: saveProject(project),
-      };
-    });
+    }));
   },
 
   selectGroup: (groupId) =>
     set((state) => {
       const group = state.activeCanvas.groups.find((item) => item.id === groupId);
-      const project = updateActiveCanvas(state.project, (canvas) => ({
-        ...canvas,
-        nodes: canvas.nodes.map((node) => ({ ...node, selected: false })),
-      }));
       return {
-        project,
-        activeCanvas: activeCanvasOf(project),
         selectedNodeId: '',
         selectedNodeIds: group?.nodeIds ?? [],
         selectedGroupId: groupId,
         referenceSelectionIds: [],
-        lastSavedAt: saveProject(project),
       };
     }),
 
@@ -1025,6 +1221,8 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
 
   attachReferencesToNode: (targetNodeId, sourceNodeIds) => {
     set((state) => {
+      const targetNode = state.activeCanvas.nodes.find((node) => node.id === targetNodeId);
+      if (!targetNode || targetNode.data.kind === 'video') return state;
       const references = nodeReferencesFromIds(state.activeCanvas.nodes, sourceNodeIds, targetNodeId);
       if (!references.length) return state;
       const project = updateActiveCanvas(state.project, (canvas) => ({
@@ -1037,11 +1235,16 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
 
   attachGroupReferencesToNode: (targetNodeId, groupId) => {
     set((state) => {
+      const targetNode = state.activeCanvas.nodes.find((node) => node.id === targetNodeId);
+      if (!targetNode) return state;
       const references = groupReferencesFromId(state.activeCanvas, groupId, targetNodeId);
       if (!references.length) return state;
+      const shouldAttachReferences = targetNode.data.kind !== 'video';
       const project = updateActiveCanvas(state.project, (canvas) => ({
         ...canvas,
-        nodes: canvas.nodes.map((node) => (node.id === targetNodeId ? patchNodeWithReferences(node, references) : node)),
+        nodes: shouldAttachReferences
+          ? canvas.nodes.map((node) => (node.id === targetNodeId ? patchNodeWithReferences(node, references) : node))
+          : canvas.nodes,
         edges: hasGroupEdge(canvas.edges, groupId, targetNodeId)
           ? canvas.edges
           : [...canvas.edges, groupEdgeFor(groupId, targetNodeId)],
@@ -1059,12 +1262,17 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
 
   connectSourceNodesToTarget: (targetNodeId, sourceNodeIds) => {
     set((state) => {
-      const sourceIds = [...new Set(sourceNodeIds)].filter((id) => id && id !== targetNodeId);
+      const nodeIds = new Set(state.activeCanvas.nodes.map((node) => node.id));
+      const sourceIds = [...new Set(sourceNodeIds)].filter((id) => id && id !== targetNodeId && nodeIds.has(id));
+      const targetNode = state.activeCanvas.nodes.find((node) => node.id === targetNodeId);
+      if (!targetNode || !sourceIds.length) return state;
       const references = nodeReferencesFromIds(state.activeCanvas.nodes, sourceIds, targetNodeId);
-      if (!references.length) return state;
+      const shouldAttachReferences = targetNode.data.kind !== 'video';
       const project = updateActiveCanvas(state.project, (canvas) => ({
         ...canvas,
-        nodes: canvas.nodes.map((node) => (node.id === targetNodeId ? patchNodeWithReferences(node, references) : node)),
+        nodes: shouldAttachReferences
+          ? canvas.nodes.map((node) => (node.id === targetNodeId ? patchNodeWithReferences(node, references) : node))
+          : canvas.nodes,
         edges: [
           ...canvas.edges,
           ...sourceIds
@@ -1105,14 +1313,19 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     set((state) => {
       const index = state.activeCanvas.nodes.length;
       const node = makeNode(kind, index, position);
+      const targetNode = state.activeCanvas.nodes.find((item) => item.id === targetNodeId);
+      if (!targetNode) return state;
       const extraSourceIds = (sourceNodeIds ?? state.referenceSelectionIds).filter((id) => id !== targetNodeId);
       const references = [nodeToReference(node), ...nodeReferencesFromIds(state.activeCanvas.nodes, extraSourceIds, targetNodeId)];
+      const shouldAttachReferences = targetNode.data.kind !== 'video';
       const project = updateActiveCanvas(state.project, (canvas) => ({
         ...canvas,
         nodes: [
-          ...canvas.nodes.map((canvasNode) =>
-            canvasNode.id === targetNodeId ? patchNodeWithReferences(canvasNode, references) : canvasNode,
-          ),
+          ...(shouldAttachReferences
+            ? canvas.nodes.map((canvasNode) =>
+                canvasNode.id === targetNodeId ? patchNodeWithReferences(canvasNode, references) : canvasNode,
+              )
+            : canvas.nodes),
           node,
         ],
         edges: [...canvas.edges, edgeFor(node.id, targetNodeId)],
@@ -1143,20 +1356,11 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     if (bufferedIds.length) {
       get().attachReferencesToNode(nodeId, bufferedIds);
     }
-    set((nextState) => {
-      const project = updateActiveCanvas(nextState.project, (canvas) => ({
-        ...canvas,
-        nodes: canvas.nodes.map((node) => ({ ...node, selected: node.id === nodeId })),
-      }));
-      return {
-        project,
-        activeCanvas: activeCanvasOf(project),
-        selectedNodeId: nodeId,
-        selectedNodeIds: [nodeId],
-        selectedGroupId: '',
-        referenceSelectionIds: bufferedIds,
-        lastSavedAt: saveProject(project),
-      };
+    set({
+      selectedNodeId: nodeId,
+      selectedNodeIds: [nodeId],
+      selectedGroupId: '',
+      referenceSelectionIds: bufferedIds,
     });
   },
 
@@ -1168,7 +1372,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
         (id) => id && id !== node.id,
       );
       const references = nodeReferencesFromIds(state.activeCanvas.nodes, sourceIds);
-      const nodeWithReferences = patchNodeWithReferences(node, references);
+      const nodeWithReferences = kind === 'video' ? node : patchNodeWithReferences(node, references);
       const project = updateActiveCanvas(state.project, (canvas) => ({
         ...canvas,
         nodes: [...canvas.nodes, nodeWithReferences],
@@ -1195,7 +1399,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
       const index = state.activeCanvas.nodes.length;
       const node = makeNode(kind, index, position);
       const references = groupReferencesFromId(state.activeCanvas, groupId, node.id);
-      const nodeWithReferences = patchNodeWithReferences(node, references);
+      const nodeWithReferences = kind === 'video' ? node : patchNodeWithReferences(node, references);
       const project = updateActiveCanvas(state.project, (canvas) => ({
         ...canvas,
         nodes: [...canvas.nodes, nodeWithReferences],
@@ -1269,8 +1473,100 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     });
   },
 
+  reconcileGenerationJobs: (jobs) => {
+    const jobsById = new Map(jobs.filter((job) => Boolean(job.id)).map((job) => [job.id, job]));
+    if (!jobsById.size) return;
+    set((state) => {
+      let projectChanged = false;
+      const updatedAt = nowIso();
+      const canvases = state.project.canvases.map((canvas) => {
+        let canvasChanged = false;
+        const nodes = canvas.nodes.map((node) => {
+          const jobId = String(node.data.lastJobId || '');
+          const job = jobId ? jobsById.get(jobId) : undefined;
+          if (!job) return node;
+          const projected = projectGenerationJob(node, job);
+          if (projected === node) return node;
+          canvasChanged = true;
+          projectChanged = true;
+          return projected;
+        });
+        return canvasChanged ? { ...canvas, nodes, updatedAt } : canvas;
+      });
+      if (!projectChanged) return state;
+      const project = { ...state.project, canvases, updatedAt };
+      return {
+        project,
+        activeCanvas: activeCanvasOf(project),
+        lastSavedAt: saveProject(project),
+      };
+    });
+  },
+
+  resumeGenerationJobs: () => {
+    const trackedJobs = get().project.canvases.flatMap((canvas) =>
+      canvas.nodes.flatMap((node) => {
+        const jobId = String(node.data.lastJobId || '');
+        if (!jobId || jobId.startsWith('pending:') || node.data.status !== 'running') return [];
+        return [{ canvasId: canvas.id, nodeId: node.id, jobId }];
+      }),
+    );
+    trackedJobs.forEach(({ canvasId, nodeId, jobId }) => {
+      if (activeGenerationPolls.has(jobId)) return;
+      activeGenerationPolls.add(jobId);
+      void (async () => {
+        let failedPolls = 0;
+        try {
+          while (currentNodeForJob(get().project, canvasId, nodeId, jobId)?.data.status === 'running') {
+            try {
+              const job = await generationClient.getJob(jobId);
+              failedPolls = 0;
+              if (!currentNodeForJob(get().project, canvasId, nodeId, jobId)) return;
+              if (job.status === 'success' || job.status === 'error' || job.status === 'canceled') {
+                // A managed job may already have been written into the server project.
+                // Pull that snapshot first; the fallback projection below also covers
+                // legacy jobs that are only present in the generation queue.
+                await get().hydrateProjectFromServer();
+              }
+              const currentNode = currentNodeForJob(get().project, canvasId, nodeId, jobId);
+              if (!currentNode) return;
+              get().reconcileGenerationJobs([job]);
+              if (job.status === 'success') {
+                const completedNode = currentNodeForJob(get().project, canvasId, nodeId, jobId);
+                if (completedNode?.data.status === 'success') {
+                  notifyGenerationComplete(completedNode.data.title, completedNode.data.kind);
+                }
+                return;
+              }
+              if (job.status === 'error' || job.status === 'canceled') return;
+              await pause(900);
+            } catch (error) {
+              failedPolls += 1;
+              if (failedPolls < 4) {
+                await pause(1200);
+                continue;
+              }
+              const currentNode = currentNodeForJob(get().project, canvasId, nodeId, jobId);
+              if (currentNode) {
+                get().updateNodeData(nodeId, {
+                  status: 'error',
+                  progress: 0,
+                  error: readableGenerationError(error),
+                }, canvasId);
+              }
+              return;
+            }
+          }
+        } finally {
+          activeGenerationPolls.delete(jobId);
+        }
+      })();
+    });
+  },
+
   runNode: async (nodeId) => {
     const canvas = get().activeCanvas;
+    const canvasId = canvas.id;
     const node = canvas.nodes.find((item) => item.id === nodeId);
     if (!node) return;
     const references = hydrateNodeReferences(node, canvas.nodes);
@@ -1283,71 +1579,96 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
           status: 'error',
           progress: 0,
           error: `引用的文本节点“${emptyTextReference.title}”尚未生成正文。`,
-        });
+        }, canvasId);
         return;
       }
     }
     prepareCompletionFeedback();
-    get().updateNodeData(nodeId, { status: 'running', progress: 3, error: '', outputs: {} });
+    let ownedJobId = '';
     try {
-      let job = await generationClient.createJob({
+      if (JSON.stringify(references) !== JSON.stringify(node.data.references ?? [])) {
+        get().updateNodeData(nodeId, { references }, canvasId);
+      }
+      const ensureNodeIsSynced = async (forceSave = false) => {
+        if (forceSave) projectRepository.save(get().project);
+        try {
+          await projectRepository.flush();
+        } catch {
+          throw new Error(generationSyncError(projectRepository.getSyncStatus()) || '节点同步失败，未开始生成。');
+        }
+        const syncError = generationSyncError(projectRepository.getSyncStatus());
+        if (syncError) throw new Error(syncError);
+      };
+
+      const initialSyncStatus = projectRepository.getSyncStatus();
+      await ensureNodeIsSynced(initialSyncStatus === 'offline' || initialSyncStatus === 'local');
+      const requestId = newId('run');
+      const createManagedJob = () => generationClient.createJob({
+        canvasId,
         nodeId,
-        node: { ...node.data, references },
+        baseRevision: projectRepository.getRevision(),
+        requestId,
       });
-      get().updateNodeData(nodeId, {
-        progress: job.progress,
-        provider: job.provider,
-        model: job.model,
-        lastJobId: job.id,
-      });
-
-      while (job.status === 'queued' || job.status === 'running') {
-        await pause(900);
-        job = await generationClient.getJob(job.id);
-        get().updateNodeData(nodeId, {
-          status: 'running',
-          progress: Math.max(3, Math.min(99, job.progress)),
-          provider: job.provider,
-          model: job.model,
-          lastJobId: job.id,
-        });
+      let response;
+      try {
+        response = await createManagedJob();
+      } catch (error) {
+        if (!isMissingCanvasNodeError(error)) throw error;
+        // Recover projects saved by older builds where a large keepalive PUT
+        // failed locally but the run request was still sent to the server.
+        await ensureNodeIsSynced(true);
+        try {
+          response = await createManagedJob();
+        } catch (retryError) {
+          if (isMissingCanvasNodeError(retryError)) {
+            throw new Error('节点仍未同步到服务器，未开始生成。请刷新画布后重试。');
+          }
+          throw retryError;
+        }
       }
-
-      if (job.status === 'success') {
-        get().updateNodeData(nodeId, {
-          status: 'success',
-          progress: 100,
-          outputs: job.result ?? {},
-          provider: job.provider,
-          model: job.model,
-          lastJobId: job.id,
-        });
-        notifyGenerationComplete(node.data.title, node.data.kind);
-        return;
+      const job = response.job;
+      ownedJobId = job.id;
+      await get().hydrateProjectFromServer();
+      if (!currentNodeForJob(get().project, canvasId, nodeId, job.id)) {
+        throw new Error('任务已创建，但画布状态尚未同步；请刷新后在任务列表查看。');
       }
-
-      throw new Error(job.error || '生成任务失败');
+      get().reconcileGenerationJobs([job]);
+      if (job.status === 'queued' || job.status === 'running') {
+        get().resumeGenerationJobs();
+        while (activeGenerationPolls.has(job.id)) await pause(250);
+      } else if (job.status === 'success') {
+        const completedNode = currentNodeForJob(get().project, canvasId, nodeId, job.id);
+        if (completedNode?.data.status === 'success') notifyGenerationComplete(node.data.title, node.data.kind);
+      }
     } catch (error) {
-      get().updateNodeData(nodeId, {
-        status: 'error',
-        progress: 0,
-        error: readableGenerationError(error),
-      });
+      const current = get().project.canvases
+        .find((item) => item.id === canvasId)
+        ?.nodes.find((item) => item.id === nodeId);
+      if (current && (!ownedJobId || current.data.lastJobId === ownedJobId)) {
+        get().updateNodeData(nodeId, {
+          status: 'error',
+          progress: 0,
+          error: readableGenerationError(error),
+        }, canvasId);
+      }
     }
   },
 
   createCanvas: () => {
     set((state) => {
       const id = newId('canvas');
+      const timestamp = nowIso();
       const project: StudioProject = {
         ...state.project,
         activeCanvasId: id,
-        updatedAt: nowIso(),
+        updatedAt: timestamp,
         canvases: [
           ...state.project.canvases,
           {
             id,
             name: `画布 ${state.project.canvases.length + 1}`,
+            createdAt: timestamp,
+            updatedAt: timestamp,
             nodes: [],
             edges: [],
             groups: [],
@@ -1355,8 +1676,127 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
           },
         ],
       };
+      return {
+        project,
+        activeCanvas: activeCanvasOf(project),
+        selectedNodeId: '',
+        selectedNodeIds: [],
+        selectedGroupId: '',
+        referenceSelectionIds: [],
+        lastSavedAt: saveProject(project),
+      };
+    });
+  },
+
+  switchCanvas: (canvasId) => {
+    set((state) => {
+      if (canvasId === state.project.activeCanvasId) return state;
+      if (!state.project.canvases.some((canvas) => canvas.id === canvasId)) return state;
+      const project: StudioProject = {
+        ...state.project,
+        activeCanvasId: canvasId,
+        updatedAt: nowIso(),
+      };
+      return {
+        project,
+        activeCanvas: activeCanvasOf(project),
+        selectedNodeId: '',
+        selectedNodeIds: [],
+        selectedGroupId: '',
+        referenceSelectionIds: [],
+        addPanelOpen: false,
+        quickPanelOpen: false,
+        lastSavedAt: saveProject(project),
+      };
+    });
+  },
+
+  renameCanvas: (canvasId, name) => {
+    const normalizedName = name.trim().slice(0, 40);
+    if (!normalizedName) return;
+    set((state) => {
+      const target = state.project.canvases.find((canvas) => canvas.id === canvasId);
+      if (!target || target.name === normalizedName) return state;
+      const updatedAt = nowIso();
+      const project: StudioProject = {
+        ...state.project,
+        updatedAt,
+        canvases: state.project.canvases.map((canvas) =>
+          canvas.id === canvasId ? { ...canvas, name: normalizedName, updatedAt } : canvas,
+        ),
+      };
       return { project, activeCanvas: activeCanvasOf(project), lastSavedAt: saveProject(project) };
     });
+  },
+
+  hydrateProjectFromServer: async () => {
+    if (!projectHydrationInFlight) {
+      const firstHydration = !projectHydrationAttempted;
+      const sourceProject = get().project;
+      projectHydrationSourceProject = sourceProject;
+      projectHydrationInFlight = (firstHydration
+        ? projectRepository.bootstrap(sourceProject, hadLocalProjectAtStartup)
+        : projectRepository.refresh(sourceProject)
+      ).finally(() => {
+        projectHydrationAttempted = true;
+        projectHydrationInFlight = null;
+        projectHydrationSourceProject = null;
+      });
+    }
+    const hydrationSourceProject = projectHydrationSourceProject ?? get().project;
+    const hydrationPromise = projectHydrationInFlight;
+    const remoteProject = await hydrationPromise;
+    if (remoteProject) {
+      const normalizedRemote = normalizeProject(remoteProject);
+      const latestProject = get().project;
+      const localChangedDuringHydration = latestProject !== hydrationSourceProject;
+      const project = localChangedDuringHydration
+        ? normalizeProject(projectServerJobState(latestProject, normalizedRemote) ?? latestProject)
+        : normalizedRemote;
+      if (localChangedDuringHydration) projectRepository.save(project);
+      else projectRepository.saveLocal(project);
+      const currentProject = get().project;
+      if (
+        currentProject.updatedAt !== project.updatedAt ||
+        currentProject.activeCanvasId !== project.activeCanvasId
+      ) {
+        set({
+          project,
+          activeCanvas: activeCanvasOf(project),
+          selectedNodeId: '',
+          selectedNodeIds: [],
+          selectedGroupId: '',
+          referenceSelectionIds: [],
+          addPanelOpen: false,
+          quickPanelOpen: false,
+          lastSavedAt: project.updatedAt,
+        });
+      }
+    }
+    get().resumeGenerationJobs();
+  },
+
+  resolveSyncConflict: async () => {
+    try {
+      const project = await projectRepository.adoptRemoteAfterConflict(get().project);
+      if (!project) return false;
+      const normalized = normalizeProject(project);
+      set({
+        project: normalized,
+        activeCanvas: activeCanvasOf(normalized),
+        selectedNodeId: '',
+        selectedNodeIds: [],
+        selectedGroupId: '',
+        referenceSelectionIds: [],
+        addPanelOpen: false,
+        quickPanelOpen: false,
+        lastSavedAt: normalized.updatedAt,
+      });
+      get().resumeGenerationJobs();
+      return true;
+    } catch {
+      return false;
+    }
   },
 
   setAddPanelOpen: (open) => set({ addPanelOpen: open }),

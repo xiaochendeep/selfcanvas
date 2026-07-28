@@ -1,25 +1,42 @@
-import type { GeneratedFile, GenerationJob, NodeKind, NodeReference, ProviderOptions, StudioNodeData } from '../types';
+import type { GeneratedFile, GenerationJob } from '../types';
+import { browserApiFetch } from './browserSession';
 
 interface CreateGenerationJobInput {
+  canvasId: string;
   nodeId: string;
-  node: StudioNodeData;
+  baseRevision: number;
+  requestId: string;
 }
 
-interface CreateGenerationJobPayload {
+interface ManagedGenerationJobResponse {
+  projectId: string;
+  canvasId: string;
   nodeId: string;
-  kind: NodeKind;
-  title: string;
-  prompt: string;
-  provider: string;
-  model: string;
-  inputs: string[];
-  targetNodeId: string;
-  references: NodeReference[];
-  options: ProviderOptions;
+  revision: number;
+  requestId: string;
+  job: GenerationJob;
+}
+
+export type FileExportStatus = 'queued' | 'running' | 'success' | 'ready' | 'error' | 'canceled';
+
+export interface FileExportJob {
+  id: string;
+  status: FileExportStatus;
+  progress?: number;
+  downloadUrl?: string;
+  error?: string;
+  file?: {
+    url?: string;
+    downloadUrl?: string;
+  };
+  result?: {
+    url?: string;
+    downloadUrl?: string;
+  };
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
+  const response = await browserApiFetch(path, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
@@ -29,8 +46,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const text = await response.text();
   const data = text ? (JSON.parse(text) as unknown) : {};
   if (!response.ok) {
-    const message =
-      data && typeof data === 'object' && 'error' in data ? String((data as { error?: unknown }).error) : response.statusText;
+    const errorValue = data && typeof data === 'object' && 'error' in data
+      ? (data as { error?: unknown }).error
+      : undefined;
+    const message = typeof errorValue === 'object' && errorValue && 'message' in errorValue
+      ? String((errorValue as { message?: unknown }).message)
+      : errorValue !== undefined
+        ? String(errorValue)
+        : response.statusText;
     throw new Error(message || `请求失败：${response.status}`);
   }
   return data as T;
@@ -38,22 +61,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const generationClient = {
   createJob(input: CreateGenerationJobInput) {
-    const payload: CreateGenerationJobPayload = {
-      nodeId: input.nodeId,
-      kind: input.node.kind,
-      title: input.node.title,
-      prompt: input.node.prompt,
-      provider: input.node.provider,
-      model: input.node.model,
-      inputs: input.node.inputs,
-      targetNodeId: input.nodeId,
-      references: input.node.references ?? [],
-      options: input.node.providerOptions ?? {},
-    };
-    return request<GenerationJob>('/api/generation/jobs', {
+    return request<ManagedGenerationJobResponse>(
+      `/api/v2/canvases/${encodeURIComponent(input.canvasId)}/nodes/${encodeURIComponent(input.nodeId)}/run`,
+      {
       method: 'POST',
-      body: JSON.stringify(payload),
-    });
+        body: JSON.stringify({ baseRevision: input.baseRevision, requestId: input.requestId }),
+      },
+    );
   },
 
   getJob(jobId: string) {
@@ -66,5 +80,16 @@ export const generationClient = {
 
   listFiles() {
     return request<GeneratedFile[]>('/api/files');
+  },
+
+  createExport(fileIds: string[]) {
+    return request<FileExportJob>('/api/exports', {
+      method: 'POST',
+      body: JSON.stringify({ fileIds }),
+    });
+  },
+
+  getExport(exportId: string) {
+    return request<FileExportJob>(`/api/exports/${encodeURIComponent(exportId)}`);
   },
 };

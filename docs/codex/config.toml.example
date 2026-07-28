@@ -1,0 +1,34 @@
+# Streamable HTTP（推荐用于 Windows/WSL 目标机）
+# 先在启动 Codex 的环境中设置 SELF_CANVAS_MCP_TOKEN；不要把 Token 写进本文件。
+[mcp_servers.selfcanvas]
+url = "http://192.168.15.185:8790/mcp"
+bearer_token_env_var = "SELF_CANVAS_MCP_TOKEN"
+enabled = true
+required = false
+startup_timeout_sec = 20
+tool_timeout_sec = 90
+default_tools_approval_mode = "writes"
+
+# 付费/外部 AI 操作始终提示确认。
+[mcp_servers.selfcanvas.tools.canvas_run_node]
+approval_mode = "prompt"
+
+[mcp_servers.selfcanvas.tools.canvas_create_video_edit]
+approval_mode = "prompt"
+
+# 若 Codex 与 SelfCanvas 在同一台机器，可删除上面的 HTTP 配置并改用以下 stdio 配置：
+# [mcp_servers.selfcanvas]
+# command = "node"
+# args = ["/absolute/path/to/canvaspro-ui-studio/mcp/stdio.mjs"]
+# cwd = "/absolute/path/to/canvaspro-ui-studio"
+# enabled = true
+# required = false
+# startup_timeout_sec = 20
+# tool_timeout_sec = 90
+# default_tools_approval_mode = "writes"
+#
+# [mcp_servers.selfcanvas.env]
+# SELF_CANVAS_BASE_URL = "http://127.0.0.1:8787"
+# SELF_CANVAS_PUBLIC_BASE_URL = "http://127.0.0.1:8787"
+# SELF_CANVAS_API_TOKEN 由 Codex 启动环境继承，不要把真实值写入本文件。
+# SELF_CANVAS_MCP_SCOPES = "canvas:read,canvas:write,generation:read,generation:run,artifacts:read,artifacts:download"

@@ -1,8 +1,12 @@
 import {
   ArrowDownUp,
+  Check,
+  Download,
   Image,
   ListChecks,
-  Map,
+  LoaderCircle,
+  LocateFixed,
+  Map as MapIcon,
   Package,
   Plus,
   Search,
@@ -12,8 +16,18 @@ import {
   Volume2,
   X,
 } from 'lucide-react';
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { generationClient } from '../services/generationClient';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  linkOutputFilesToCanvas,
+  mergeCanvasMediaFiles,
+  generatedFileDownloadName,
+  generatedFileDownloadUrl,
+  generatedFilePreviewUrl,
+  isLocallyDownloadableUrl,
+  type CanvasMediaFile,
+  triggerMediaDownload,
+} from '../services/artifactClient';
+import { generationClient, type FileExportJob } from '../services/generationClient';
 import { useCanvasStore } from '../store/canvasStore';
 import type { GeneratedFile, GenerationJob } from '../types';
 import type { RailPanelId } from './LeftRail';
@@ -26,7 +40,7 @@ interface RailPanelsProps {
 
 const assetTabs = [
   { id: 'people', label: '人物', empty: '暂无人物资产', icon: UserRound },
-  { id: 'scene', label: '场景', empty: '暂无场景资产', icon: Map },
+  { id: 'scene', label: '场景', empty: '暂无场景资产', icon: MapIcon },
   { id: 'object', label: '物品', empty: '暂无物品资产', icon: Package },
 ] as const;
 
@@ -37,26 +51,6 @@ const mediaFilters = [
   { label: '视频', type: 'video', icon: Video },
   { label: '声音', type: 'audio', icon: Volume2 },
 ] as const;
-
-const mediaItems = [
-  { title: '窗边小猫', palette: ['#f7ead6', '#b98b58', '#11131a'], shape: 'circle' },
-  { title: '参考小猫', palette: ['#efe5d5', '#8b5d36', '#1a1d24'], shape: 'circle' },
-  { title: '红色能量场', palette: ['#1b0508', '#c30c1e', '#ff3f2f'], shape: 'wave' },
-  { title: '草原蒙古包', palette: ['#8fd6ff', '#57a862', '#e7eef8'], shape: 'landscape' },
-  { title: '视频预览', palette: ['#f4d7b4', '#bf8051', '#20160f'], shape: 'circle' },
-  { title: '狗狗素材', palette: ['#f5dcc1', '#d38a43', '#2a1f1a'], shape: 'portrait' },
-];
-
-function thumbnail(title: string, palette: string[], shape: string) {
-  const visual =
-    shape === 'wave'
-      ? `<path d="M0 190 C120 88 214 226 330 112 C434 22 520 132 640 74 L640 360 L0 360 Z" fill="${palette[1]}" opacity=".62"/><path d="M42 282 C184 182 264 300 420 174 C494 114 548 146 624 90" fill="none" stroke="${palette[2]}" stroke-width="18" opacity=".7"/>`
-      : shape === 'landscape'
-        ? `<rect y="0" width="640" height="180" fill="${palette[0]}"/><path d="M0 190 C94 126 166 190 254 132 C350 70 444 174 640 86 L640 360 L0 360 Z" fill="${palette[1]}"/><rect x="74" y="204" width="156" height="62" rx="31" fill="${palette[2]}" opacity=".9"/><rect x="272" y="218" width="118" height="50" rx="25" fill="${palette[2]}" opacity=".86"/>`
-        : `<circle cx="246" cy="158" r="108" fill="${palette[1]}" opacity=".86"/><ellipse cx="332" cy="218" rx="176" ry="90" fill="${palette[0]}" opacity=".82"/><rect x="78" y="54" width="484" height="252" rx="30" fill="none" stroke="rgba(255,255,255,.22)" stroke-width="2"/>`;
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360"><defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${palette[0]}"/><stop offset="1" stop-color="#090a0e"/></linearGradient></defs><rect width="640" height="360" fill="url(#bg)"/>${visual}<text x="34" y="328" fill="rgba(255,255,255,.74)" font-family="Inter,Arial,sans-serif" font-size="24" font-weight="800">${title}</text></svg>`;
-  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
-}
 
 function PanelShell({
   children,
@@ -122,20 +116,39 @@ function WorkflowPanel({ onClose }: { onClose: () => void }) {
 }
 
 function FileManagerPanel({ onClose }: { onClose: () => void }) {
+  const activeCanvas = useCanvasStore((state) => state.activeCanvas);
+  const revealNode = useCanvasStore((state) => state.revealNode);
   const [activeTab, setActiveTab] = useState<(typeof fileTabs)[number]>('当前画布生成');
   const [activeFilter, setActiveFilter] = useState<(typeof mediaFilters)[number]['type']>('all');
+  const [searchQuery, setSearchQuery] = useState('');
   const [files, setFiles] = useState<GeneratedFile[]>([]);
   const [filesError, setFilesError] = useState('');
-  const thumbnails = useMemo(
-    () => mediaItems.map((item) => ({ ...item, src: thumbnail(item.title, item.palette, item.shape) })),
-    [],
+  const [selectedFileIds, setSelectedFileIds] = useState<Set<string>>(() => new Set());
+  const [exporting, setExporting] = useState(false);
+  const [exportNotice, setExportNotice] = useState('');
+  const mountedRef = useRef(true);
+  const indexedFiles = useMemo<CanvasMediaFile[]>(
+    () => activeTab === '当前画布生成'
+      ? mergeCanvasMediaFiles(activeCanvas, files)
+      : linkOutputFilesToCanvas(activeCanvas, files),
+    [activeCanvas, activeTab, files],
   );
   const visibleFiles = useMemo(() => {
-    if (activeFilter === 'all') return files;
-    return files.filter((file) => file.type === activeFilter);
-  }, [activeFilter, files]);
+    const needle = searchQuery.trim().toLocaleLowerCase();
+    return indexedFiles.filter((file) => {
+      if (activeFilter !== 'all' && file.type !== activeFilter) return false;
+      if (!needle) return true;
+      return [file.title, file.nodeTitle, file.canvasName, file.mimeType, file.type]
+        .filter(Boolean)
+        .some((value) => String(value).toLocaleLowerCase().includes(needle));
+    });
+  }, [activeFilter, indexedFiles, searchQuery]);
+  const exportableVisibleFiles = visibleFiles.filter((file) => Boolean(file.artifactId));
+  const allVisibleSelected = exportableVisibleFiles.length > 0
+    && exportableVisibleFiles.every((file) => selectedFileIds.has(file.artifactId as string));
 
   useEffect(() => {
+    mountedRef.current = true;
     let mounted = true;
     const loadFiles = () => {
       void generationClient
@@ -154,9 +167,76 @@ function FileManagerPanel({ onClose }: { onClose: () => void }) {
     const timer = window.setInterval(loadFiles, 4500);
     return () => {
       mounted = false;
+      mountedRef.current = false;
       window.clearInterval(timer);
     };
   }, []);
+
+  useEffect(() => {
+    const currentIds = new Set(indexedFiles.map((file) => file.artifactId).filter((id): id is string => Boolean(id)));
+    setSelectedFileIds((current) => {
+      const retained = new Set(Array.from(current).filter((id) => currentIds.has(id)));
+      if (retained.size === current.size) return current;
+      return retained;
+    });
+  }, [indexedFiles]);
+
+  const toggleFileSelection = (fileId: string | undefined) => {
+    if (!fileId) return;
+    setSelectedFileIds((current) => {
+      const next = new Set(current);
+      if (next.has(fileId)) next.delete(fileId);
+      else next.add(fileId);
+      return next;
+    });
+  };
+
+  const toggleVisibleSelection = () => {
+    setSelectedFileIds((current) => {
+      const next = new Set(current);
+      exportableVisibleFiles.forEach((file) => {
+        const fileId = file.artifactId as string;
+        if (allVisibleSelected) next.delete(fileId);
+        else next.add(fileId);
+      });
+      return next;
+    });
+  };
+
+  const exportDownloadUrl = (job: FileExportJob) =>
+    job.downloadUrl || job.file?.downloadUrl || job.file?.url || job.result?.downloadUrl || job.result?.url || '';
+
+  const downloadSelectedAsZip = async () => {
+    if (exporting || selectedFileIds.size === 0) return;
+    setExporting(true);
+    setExportNotice(`正在打包 ${selectedFileIds.size} 个文件…`);
+    try {
+      let job = await generationClient.createExport(Array.from(selectedFileIds));
+      for (let attempt = 0; attempt < 600 && mountedRef.current; attempt += 1) {
+        if (job.status === 'success' || job.status === 'ready') {
+          const downloadUrl = exportDownloadUrl(job);
+          if (!downloadUrl) throw new Error('压缩包已生成，但没有可用的下载地址。');
+          if (!triggerMediaDownload(downloadUrl)) throw new Error('压缩包下载地址无效。');
+          setSelectedFileIds(new Set());
+          setExportNotice('压缩包已开始下载。');
+          return;
+        }
+        if (job.status === 'error' || job.status === 'canceled') {
+          throw new Error(job.error || (job.status === 'canceled' ? '打包任务已取消。' : '文件打包失败。'));
+        }
+        const progress = Number(job.progress ?? 0);
+        setExportNotice(progress > 0 ? `正在打包 ${Math.round(progress)}%…` : '正在打包，请稍候…');
+        await new Promise((resolve) => window.setTimeout(resolve, 500));
+        if (!mountedRef.current) return;
+        job = await generationClient.getExport(job.id);
+      }
+      if (mountedRef.current) throw new Error('文件打包超时，请稍后重试。');
+    } catch (error) {
+      if (mountedRef.current) setExportNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (mountedRef.current) setExporting(false);
+    }
+  };
 
   return (
     <PanelShell className="rail-panel-files" title="文件管理" onClose={onClose}>
@@ -168,6 +248,15 @@ function FileManagerPanel({ onClose }: { onClose: () => void }) {
         ))}
       </div>
       <div className="file-subtitle">{activeTab}媒体历史</div>
+      <label className="file-search">
+        <Search size={18} />
+        <input
+          value={searchQuery}
+          onChange={(event) => setSearchQuery(event.currentTarget.value)}
+          placeholder="搜索文件名、节点或媒体类型"
+        />
+        <span>{visibleFiles.length}</span>
+      </label>
       <div className="media-filter-row">
         <div className="media-filters">
           {mediaFilters.map((filter) => {
@@ -189,30 +278,98 @@ function FileManagerPanel({ onClose }: { onClose: () => void }) {
           <ArrowDownUp size={22} />
         </button>
       </div>
+      {indexedFiles.length > 0 && (
+        <div className="file-batch-toolbar">
+          <button
+            className={allVisibleSelected ? 'is-active' : ''}
+            type="button"
+            disabled={exportableVisibleFiles.length === 0 || exporting}
+            onClick={toggleVisibleSelection}
+          >
+            <span className="file-selection-box">{allVisibleSelected && <Check size={14} strokeWidth={3} />}</span>
+            <span>{allVisibleSelected ? '取消全选' : '选择当前结果'}</span>
+          </button>
+          <span className="file-selection-count">已选 {selectedFileIds.size} 项</span>
+          <button
+            className="file-batch-download"
+            type="button"
+            disabled={selectedFileIds.size === 0 || exporting}
+            onClick={() => void downloadSelectedAsZip()}
+          >
+            {exporting ? <LoaderCircle className="spin" size={17} /> : <Package size={17} />}
+            <span>{exporting ? '正在打包' : '打包下载 ZIP'}</span>
+          </button>
+        </div>
+      )}
+      {exportNotice && <div className={`file-export-notice ${exporting ? 'is-running' : ''}`}>{exportNotice}</div>}
       <div className="media-grid">
-        {filesError && <div className="media-empty">文件服务暂不可用：{filesError}</div>}
-        {!filesError && files.length > 0 && visibleFiles.length === 0 && <div className="media-empty">暂无匹配媒体</div>}
-        {!filesError &&
-          files.length > 0 &&
-          visibleFiles.map((file) => (
-            <a className="media-card generated-media-card" href={file.url} key={file.id} target="_blank" rel="noreferrer">
-              {file.type === 'image' ? (
-                <img src={file.url} alt={file.title} />
-              ) : (
-                <div className={`generated-media-fallback type-${file.type}`}>
-                  {file.type === 'video' ? <Video size={34} /> : <Volume2 size={34} />}
-                </div>
-              )}
-              <span className="media-card-title">{file.title}</span>
-            </a>
-          ))}
-        {!filesError &&
-          files.length === 0 &&
-          thumbnails.map((item) => (
-            <button className="media-card" key={item.title} type="button">
-              <img src={item.src} alt={item.title} />
-            </button>
-          ))}
+        {filesError && indexedFiles.length === 0 && <div className="media-empty">文件服务暂不可用：{filesError}</div>}
+        {indexedFiles.length > 0 && visibleFiles.length === 0 && <div className="media-empty">暂无匹配媒体</div>}
+        {visibleFiles.length > 0 &&
+          visibleFiles.map((file) => {
+            const previewUrl = generatedFilePreviewUrl(file);
+            const downloadUrl = generatedFileDownloadUrl(file);
+            const downloadable = isLocallyDownloadableUrl(downloadUrl);
+            const selected = Boolean(file.artifactId && selectedFileIds.has(file.artifactId));
+            return (
+              <article
+                className={`media-card generated-media-card ${selected ? 'is-selected' : ''}`}
+                key={`${file.canvasId ?? 'output'}:${file.nodeId ?? 'file'}:${file.id}`}
+                title={file.nodeId ? `${file.title} · 位于 ${file.canvasName ?? '当前画布'}` : file.title}
+              >
+                <a className="generated-media-preview" href={previewUrl} target="_blank" rel="noreferrer" aria-label={`预览 ${file.title}`}>
+                  {file.type === 'image' ? (
+                    <img src={previewUrl} alt={file.title} />
+                  ) : (
+                    <div className={`generated-media-fallback type-${file.type}`}>
+                      {file.type === 'video' ? <Video size={34} /> : <Volume2 size={34} />}
+                    </div>
+                  )}
+                </a>
+                <button
+                  className="media-card-select"
+                  type="button"
+                  aria-label={selected ? `取消选择 ${file.title}` : `选择 ${file.title}`}
+                  aria-pressed={selected}
+                  disabled={!file.artifactId}
+                  onClick={() => toggleFileSelection(file.artifactId)}
+                >
+                  {selected && <Check size={14} strokeWidth={3} />}
+                </button>
+                <button
+                  className="media-card-download"
+                  type="button"
+                  aria-label={`下载 ${file.title}`}
+                  title={downloadable ? '下载' : '暂不可下载：文件尚未落盘'}
+                  disabled={!downloadable}
+                  onClick={() => triggerMediaDownload(downloadUrl, generatedFileDownloadName(file))}
+                >
+                  <Download size={16} />
+                </button>
+                {file.nodeId && (
+                  <button
+                    className="media-card-locate"
+                    type="button"
+                    aria-label={`在画布中定位 ${file.title}`}
+                    title="定位到画布"
+                    onClick={() => {
+                      revealNode(file.nodeId as string, file.canvasId);
+                      onClose();
+                    }}
+                  >
+                    <LocateFixed size={16} />
+                  </button>
+                )}
+                <span className="media-card-title">{file.title}</span>
+                {file.nodeId && <span className="media-card-context">{file.nodeTitle || '素材节点'}</span>}
+              </article>
+            );
+          })}
+        {!filesError && indexedFiles.length === 0 && (
+          <div className="media-empty">
+            {activeTab === '当前画布生成' ? '当前画布还没有可管理的媒体资产' : '输出文件夹为空'}
+          </div>
+        )}
       </div>
     </PanelShell>
   );
@@ -242,14 +399,38 @@ function CanvasPanel({ onClose }: { onClose: () => void }) {
 function TaskPanel({ onClose }: { onClose: () => void }) {
   const [jobs, setJobs] = useState<GenerationJob[]>([]);
   const [error, setError] = useState('');
+  const reconcileGenerationJobs = useCanvasStore((state) => state.reconcileGenerationJobs);
+  const hydrateProjectFromServer = useCanvasStore((state) => state.hydrateProjectFromServer);
+  const requestInFlightRef = useRef(false);
 
   useEffect(() => {
     let mounted = true;
     const loadJobs = () => {
+      if (requestInFlightRef.current) return;
+      requestInFlightRef.current = true;
       void generationClient
         .listJobs()
-        .then((items) => {
+        .then(async (items) => {
           if (!mounted) return;
+          const project = useCanvasStore.getState().project;
+          const nodesByJobId = new globalThis.Map(
+            project.canvases.flatMap((canvas) =>
+              canvas.nodes.flatMap((node) => {
+                const jobId = String(node.data.lastJobId || '');
+                return jobId ? [[jobId, node] as const] : [];
+              }),
+            ),
+          );
+          const hasUnprojectedTerminalJob = items.some((job) => {
+            const node = nodesByJobId.get(job.id);
+            if (!node) return false;
+            if (job.status === 'success') return node.data.status !== 'success';
+            if (job.status === 'error' || job.status === 'canceled') return node.data.status !== 'error';
+            return false;
+          });
+          if (hasUnprojectedTerminalJob) await hydrateProjectFromServer();
+          if (!mounted) return;
+          reconcileGenerationJobs(items);
           setJobs(items);
           setError('');
         })
@@ -257,6 +438,9 @@ function TaskPanel({ onClose }: { onClose: () => void }) {
           if (!mounted) return;
           setJobs([]);
           setError(nextError instanceof Error ? nextError.message : String(nextError));
+        })
+        .finally(() => {
+          requestInFlightRef.current = false;
         });
     };
     loadJobs();
@@ -265,7 +449,7 @@ function TaskPanel({ onClose }: { onClose: () => void }) {
       mounted = false;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [hydrateProjectFromServer, reconcileGenerationJobs]);
 
   const statusText: Record<GenerationJob['status'], string> = {
     queued: '排队中',

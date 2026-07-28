@@ -43,7 +43,13 @@ const descriptions: Partial<Record<NodeKind, string>> = {
   text: '文案、脚本、提示词扩写',
   image: '文生图、参考图、视觉结果',
   video: '图生视频、镜头预览、成片占位',
+  audio: '配音、音效、音乐生成',
+  stage3d: '镜位规划与空间调度',
+  panorama: '全景场景与环境预览',
+  storyboard: '拆解镜头、节奏与画面',
+  collage: '组合素材与视觉参考',
   asset: '本地素材、角色图、音视频引用',
+  upload: '导入图片、视频或音频',
 };
 
 const compactKinds: NodeKind[] = ['text', 'image', 'video', 'asset'];
@@ -119,7 +125,7 @@ export function AddNodePanel({
   }
 
   return (
-    <div className="add-node-menu">
+    <div className="add-node-menu" role="menu" aria-label="添加节点">
       {menuSections.map((section) => (
         <section className="add-node-section" key={section.title}>
           <div className="add-node-section-title">
@@ -133,13 +139,17 @@ export function AddNodePanel({
                 <button
                   className={`add-node-list-item menu-kind-${item.kind}`}
                   key={item.kind}
+                  role="menuitem"
                   type="button"
                   onClick={() => handleAdd(item.kind)}
                 >
                   <span className="add-node-list-icon">
-                    <Icon size={29} />
+                    <Icon size={22} />
                   </span>
-                  <span className="add-node-list-label">{item.label}</span>
+                  <span className="add-node-list-copy">
+                    <strong className="add-node-list-label">{item.label}</strong>
+                    <small>{descriptions[item.kind]}</small>
+                  </span>
                   {item.badge && <span className="node-beta-badge">{item.badge}</span>}
                 </button>
               );
