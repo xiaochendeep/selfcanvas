@@ -8,6 +8,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Agent, fetch as undiciFetch } from 'undici';
+import { anyCapModel, anyCapDescriptor, anyCapParameters, normalizeAnyCapParameter, validateAnyCapReferences } from './anycapCatalog.mjs';
 import {
   buildStoryboardRepairPrompt,
   buildStoryboardSystemPrompt,
@@ -180,6 +181,10 @@ function videoModelKey(model) {
 function canonicalVideoModel(model) {
   const original = String(model || '').trim();
   const aliases = {
+    h3: 'minimax-h3',
+    minimaxh3: 'minimax-h3',
+    seedance2mini: 'seedance-2-mini',
+    seedance25: 'seedance-2.5',
     seedance2: 'seedance-2',
     seedance20: 'seedance-2',
     seedance20fast: 'seedance-2-fast',
@@ -213,6 +218,21 @@ const noMediaLimits = { image: 0, video: 0, audio: 0 };
 const seedanceRatios = ['16:9', '3:4', '21:9', '9:16', '4:3', '1:1'];
 
 const videoCapabilities = {
+  'seedance-2.5': {
+    supportsGenerateAudio: true,
+    mode: 'multi-modal-reference',
+    modes: ['multi-modal-reference', 'image-to-video', 'text-to-video'],
+    resolutions: ['480p', '720p', '1080p'],
+    durations: range(4, 15),
+    defaultDuration: 6,
+    aspectRatios: ['3:4', '21:9', '9:16', '16:9', '4:3', '1:1'],
+    references: { image: 9, video: 3, audio: 3 },
+    referencesByMode: {
+      'text-to-video': noMediaLimits,
+      'image-to-video': { image: 9, video: 0, audio: 0 },
+      'multi-modal-reference': { image: 9, video: 3, audio: 3 },
+    },
+  },
   'seedance-2-fast': {
     supportsGenerateAudio: true,
     mode: 'multi-modal-reference',
@@ -359,7 +379,7 @@ const defaultVideoCapability = {
 };
 
 function videoCapability(model) {
-  return videoCapabilities[canonicalVideoModel(model)] || defaultVideoCapability;
+  return anyCapDescriptor(canonicalVideoModel(model)) || videoCapabilities[canonicalVideoModel(model)] || defaultVideoCapability;
 }
 
 function videoReferenceLimits(model, mode) {
@@ -1024,9 +1044,17 @@ export async function runAnyCapImage(job, payload) {
     process.env.ANYCAP_IMAGE_MODEL || (payload.model && !payload.model.startsWith('mock') ? payload.model : '') || 'nano-banana-2',
   );
   const bin = process.env.ANYCAP_BIN || 'anycap';
-  const filePath = path.join(outputDir(), `${safeId(job.id)}.png`);
   const imagePaths = await existingReferencePaths(payload, 'image');
-  const mode = imagePaths.length ? 'image-to-image' : 'text-to-image';
+  const requestedMode = stringOption(options.mode);
+  const mode = requestedMode || (imagePaths.length ? 'image-to-image' : 'text-to-image');
+  const parameters = anyCapParameters(model, mode);
+  if (!parameters) throw new Error(`${model} 的图片参数尚未同步，请先刷新 AnyCap 模型列表`);
+  validateAnyCapReferences(model, mode, {
+    image: imagePaths.length, video: (await existingReferencePaths(payload, 'video')).length,
+    audio: (await existingReferencePaths(payload, 'audio')).length,
+  });
+  const format = normalizeAnyCapParameter(parameters.format, stringOption(options.outputFormat, 'png')) || 'png';
+  const filePath = path.join(outputDir(), `${safeId(job.id)}.${format}`);
   const args = [
     'image',
     'generate',
@@ -1039,7 +1067,9 @@ export async function runAnyCapImage(job, payload) {
     '-o',
     filePath,
   ];
-  addAnyCapParam(args, 'aspect_ratio', stringOption(options.aspectRatio));
+  addAnyCapParam(args, 'aspect_ratio', normalizeAnyCapParameter(parameters.aspect_ratio, options.aspectRatio));
+  addAnyCapParam(args, 'resolution', normalizeAnyCapParameter(parameters.resolution, String(options.resolutionTier || '').toLowerCase()));
+  addAnyCapParam(args, 'format', normalizeAnyCapParameter(parameters.format, format));
   if (imagePaths.length) addAnyCapJsonParam(args, 'images', imagePaths);
   const result = await runWithSyntheticProgress(job, 18, 92, () => runCommand(bin, args));
   try {
@@ -1062,13 +1092,13 @@ export async function runAnyCapVideo(job, payload) {
   const options = optionsOf(payload);
   const model = canonicalVideoModel(
     stringOption(options.model) ||
-    process.env.ANYCAP_VIDEO_MODEL ||
     (payload.model && !payload.model.startsWith('mock') ? payload.model : '') ||
+    process.env.ANYCAP_VIDEO_MODEL ||
     'seedance-2-fast',
   );
   const bin = process.env.ANYCAP_BIN || 'anycap';
   const filePath = path.join(outputDir(), `${safeId(job.id)}.mp4`);
-  const capability = videoCapability(model);
+  let capability = videoCapability(model);
   const imagePaths = await existingReferencePaths(payload, 'image');
   const videoPaths = await existingReferencePaths(payload, 'video');
   const audioPaths = await existingReferencePaths(payload, 'audio');
@@ -1079,6 +1109,10 @@ export async function runAnyCapVideo(job, payload) {
     { images: imagePaths.length, videos: videoPaths.length, audios: audioPaths.length },
     multiShotClips,
   );
+  const parameters = anyCapParameters(model, mode);
+  if (!parameters) throw new Error(`${model} 的视频参数尚未同步，请先刷新 AnyCap 模型列表`);
+  capability = { ...capability, ...capability.modeOptions?.[mode] };
+  validateAnyCapReferences(model, mode, { image: imagePaths.length, video: videoPaths.length, audio: audioPaths.length });
   const limits = videoReferenceLimits(model, mode);
   const labels = { image: '参考图', video: '参考视频', audio: '参考音频' };
   for (const [type, count] of Object.entries({ image: imagePaths.length, video: videoPaths.length, audio: audioPaths.length })) {
@@ -1089,7 +1123,7 @@ export async function runAnyCapVideo(job, payload) {
     }
   }
   const resolution = allowedStringOption(capability.resolutions, options.resolution, capability.resolutions[0]);
-  const duration = closestNumberOption(capability.durations, options.duration, capability.defaultDuration);
+  const duration = closestNumberOption(capability.durations, options.duration, numberOption(options.duration, capability.defaultDuration));
   const aspectRatio = allowedStringOption(capability.aspectRatios, options.aspectRatio, '');
   const args = [
     'video',
@@ -1103,14 +1137,18 @@ export async function runAnyCapVideo(job, payload) {
     '-o',
     filePath,
   ];
-  addAnyCapParam(args, 'resolution', resolution);
-  addAnyCapParam(args, 'duration', duration);
-  addAnyCapParam(args, 'aspect_ratio', stringOption(options.aspectRatio) === 'adaptive' ? 'adaptive' : aspectRatio);
-  addAnyCapParam(args, 'format', stringOption(options.format, 'mp4'));
+  addAnyCapParam(args, 'resolution', normalizeAnyCapParameter(parameters.resolution, resolution || options.resolution));
+  addAnyCapParam(args, 'duration', normalizeAnyCapParameter(parameters.duration, duration));
+  addAnyCapParam(args, 'aspect_ratio', normalizeAnyCapParameter(parameters.aspect_ratio, stringOption(options.aspectRatio) || aspectRatio));
+  addAnyCapParam(args, 'format', normalizeAnyCapParameter(parameters.format, stringOption(options.format, 'mp4')));
+  addAnyCapParam(args, 'fps', normalizeAnyCapParameter(parameters.fps, options.fps));
   if (capability.supportsGenerateAudio && typeof options.generateAudio === 'boolean') {
     addAnyCapParam(args, 'generate_audio', String(options.generateAudio));
   }
-  if ((limits.image ?? 0) > 0 && mode !== 'text-to-video') {
+  if (parameters.first_frame && parameters.last_frame) {
+    addAnyCapParam(args, 'first_frame', imagePaths[0]);
+    addAnyCapParam(args, 'last_frame', imagePaths[1]);
+  } else if ((limits.image ?? 0) > 0 && mode !== 'text-to-video') {
     addAnyCapJsonParam(args, 'images', imagePaths);
   }
   if ((limits.video ?? 0) > 0 && mode !== 'text-to-video') {
@@ -1140,37 +1178,31 @@ export async function runAnyCapVideo(job, payload) {
 
 export async function runAnyCapAudio(job, payload) {
   const options = optionsOf(payload);
-  const requestedModel = stringOption(options.model, process.env.ANYCAP_AUDIO_MODEL || 'doubao-seed-audio-1-0');
-  const model = requestedModel === 'anycap-audio' ? 'elevanlabs-music' : requestedModel;
+  const requestedModel = stringOption(options.model) || stringOption(payload.model) || process.env.ANYCAP_AUDIO_MODEL || 'doubao-seed-audio-1-0';
+  const model = anyCapModel(requestedModel === 'anycap-audio' ? 'elevanlabs-music' : requestedModel)?.id;
   if (!model) {
     throw new Error('AnyCap 音频模型未配置。请在 .env 设置 ANYCAP_AUDIO_MODEL 后再运行音频节点。');
   }
   await ensureOutputDir();
   const bin = process.env.ANYCAP_BIN || 'anycap';
-  const isDoubaoAudio = model === 'doubao-seed-audio-1-0';
-  const format = ['mp3', 'wav'].includes(stringOption(options.format).toLowerCase())
+  const descriptor = anyCapDescriptor(model);
+  const isDoubaoAudio = descriptor.capability === 'audio';
+  const format = isDoubaoAudio && ['mp3', 'wav'].includes(stringOption(options.format).toLowerCase())
     ? stringOption(options.format).toLowerCase()
     : 'mp3';
   const filePath = path.join(outputDir(), `${safeId(job.id)}.${format}`);
   const audioPaths = await existingReferencePaths(payload, 'audio');
   const imagePaths = await existingReferencePaths(payload, 'image');
-  const allowedModes = ['text-to-audio', 'audio-to-audio', 'image-to-audio'];
-  const mode = isDoubaoAudio
-    ? (allowedModes.includes(stringOption(options.mode)) ? stringOption(options.mode) : 'text-to-audio')
-    : stringOption(options.mode, 'text-to-music');
-  if (isDoubaoAudio && mode === 'audio-to-audio' && (audioPaths.length < 1 || audioPaths.length > 3)) {
-    throw new Error('Doubao Seed Audio 音频参考模式需要 1–3 段音频');
+  const mode = descriptor.modes.includes(stringOption(options.mode)) ? stringOption(options.mode) : descriptor.mode;
+  const parameters = descriptor.parametersByMode[mode];
+  validateAnyCapReferences(model, mode, {
+    image: imagePaths.length, audio: audioPaths.length, video: (await existingReferencePaths(payload, 'video')).length,
+  });
+  if (parameters.prompt?.maxLength && String(payload.prompt || '').length > parameters.prompt.maxLength) {
+    throw new Error(`${model} 提示词最多 ${parameters.prompt.maxLength} 个字符`);
   }
-  if (isDoubaoAudio && mode === 'image-to-audio' && imagePaths.length !== 1) {
-    throw new Error('Doubao Seed Audio 图片参考模式需要 1 张图片');
-  }
-  if (isDoubaoAudio && mode === 'text-to-audio' && (audioPaths.length || imagePaths.length)) {
-    throw new Error('Doubao Seed Audio 文本模式不接受图片或音频参考');
-  }
-  const bridge = isDoubaoAudio ? await startAnyCapCapabilityBridge('music', 'audio') : null;
   const args = [
-    ...(bridge ? ['--endpoint', bridge.endpoint] : []),
-    'music',
+    descriptor.capability,
     'generate',
     '--model',
     model,
@@ -1182,12 +1214,11 @@ export async function runAnyCapAudio(job, payload) {
     filePath,
   ];
   if (isDoubaoAudio) {
-    addAnyCapParam(args, 'format', format);
-    addAnyCapParam(args, 'sample_rate', closestNumberOption([8000, 16000, 24000, 32000, 44100, 48000], options.sampleRate, 24000));
-    addAnyCapParam(args, 'speech_rate', Math.max(-50, Math.min(100, Math.round(numberOption(options.speechRate, 0)))));
-    addAnyCapParam(args, 'pitch_rate', Math.max(-12, Math.min(12, Math.round(numberOption(options.pitchRate, 0)))));
-    addAnyCapParam(args, 'loudness_rate', Math.max(-50, Math.min(100, Math.round(numberOption(options.loudnessRate, 0)))));
-    addAnyCapParam(args, 'enable_subtitle', String(options.enableSubtitle === true));
+    for (const [parameter, value] of Object.entries({ format, sample_rate: options.sampleRate ?? 24000,
+      speech_rate: options.speechRate ?? 0, pitch_rate: options.pitchRate ?? 0,
+      loudness_rate: options.loudnessRate ?? 0, enable_subtitle: options.enableSubtitle === true })) {
+      addAnyCapParam(args, parameter, normalizeAnyCapParameter(parameters[parameter], value));
+    }
     if (mode === 'text-to-audio') {
       const speakerIds = Array.isArray(options.speakerIds)
         ? options.speakerIds.map((item) => String(item).trim()).filter(Boolean).slice(0, 1)
@@ -1197,15 +1228,14 @@ export async function runAnyCapAudio(job, payload) {
     if (mode === 'audio-to-audio') addAnyCapJsonParam(args, 'audios', audioPaths);
     if (mode === 'image-to-audio') addAnyCapJsonParam(args, 'images', imagePaths);
   } else {
-    addAnyCapParam(args, 'duration', numberOption(options.duration, undefined));
-    addAnyCapParam(args, 'style', stringOption(options.style));
+    const durationMs = options.musicDurationMs ?? (Number.isFinite(Number(options.duration)) ? Number(options.duration) * 1000 : undefined);
+    for (const [parameter, value] of Object.entries({ duration: durationMs, tags: options.tags || options.style,
+      title: options.title, lyrics: options.lyrics, make_instrumental: options.makeInstrumental,
+      custom_mode: options.customMode, vocal_gender: options.vocalGender })) {
+      addAnyCapParam(args, parameter, normalizeAnyCapParameter(parameters[parameter], value));
+    }
   }
-  let result;
-  try {
-    result = await runWithSyntheticProgress(job, 18, 92, () => runCommand(bin, args));
-  } finally {
-    await bridge?.close().catch(() => undefined);
-  }
+  const result = await runWithSyntheticProgress(job, 18, 92, () => runCommand(bin, args));
   try {
     await fs.access(filePath);
   } catch {

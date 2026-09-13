@@ -1,0 +1,6 @@
+table inet selfcanvas_private {
+  chain input {
+    type filter hook input priority -10; policy accept;
+    iifname != { "lo", "wg0", "wg-home", "tailscale0" } tcp dport { 5190, 8080, 8787, 8790, 15432, 16379, 16380 } counter drop
+  }
+}

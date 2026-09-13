@@ -1,8 +1,8 @@
-import { FolderOpen, Grid3X3, ListChecks, PanelRightOpen, Plus, Settings, Upload, X } from 'lucide-react';
+import { FolderOpen, Grid3X3, ListChecks, PanelRightOpen, Plus, Settings, Sparkles, Upload, X } from 'lucide-react';
 import { useState } from 'react';
 import { useCanvasStore } from '../store/canvasStore';
 
-export type RailPanelId = 'canvases' | 'assets' | 'workflows' | 'files' | 'tasks' | 'settings';
+export type RailPanelId = 'canvases' | 'assets' | 'creative' | 'workflows' | 'files' | 'tasks' | 'settings';
 
 interface LeftRailProps {
   activePanel: RailPanelId | null;
@@ -63,6 +63,15 @@ export function LeftRail({ activePanel, onPanelChange }: LeftRailProps) {
         onClick={() => togglePanel('assets')}
       >
         <Upload size={22} />
+      </button>
+      <button
+        className={`rail-button ${activePanel === 'creative' ? 'is-active' : ''}`}
+        type="button"
+        title="创作助手 · 剧本 / 分镜 / 视频爆点"
+        aria-label="创作助手"
+        onClick={() => togglePanel('creative')}
+      >
+        <Sparkles size={22} />
       </button>
       <button
         className={`rail-button ${activePanel === 'workflows' ? 'is-active' : ''}`}

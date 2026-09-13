@@ -1,0 +1,7 @@
+[Unit]
+Description=Resource budget for private SelfCanvas and Sub2API services
+
+[Slice]
+MemoryMax=900M
+MemorySwapMax=1024M
+CPUQuota=150%

@@ -1,0 +1,17 @@
+[Unit]
+Description=SelfCanvas and Sub2API private application stack
+Requires=docker.service selfcanvas-private-access.service
+Wants=wg-quick@wg0.service tailscaled.service var-lib-selfcanvas-swapfile.swap
+After=docker.service selfcanvas-private-access.service wg-quick@wg0.service tailscaled.service var-lib-selfcanvas-swapfile.swap
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/selfcanvas-private
+ExecStart=/opt/selfcanvas-private/start-private.sh
+ExecStop=/usr/bin/docker compose stop
+TimeoutStartSec=300
+TimeoutStopSec=90
+
+[Install]
+WantedBy=multi-user.target

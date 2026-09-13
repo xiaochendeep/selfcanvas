@@ -10,6 +10,8 @@ import {
 import { create } from 'zustand';
 import { notifyGenerationComplete, prepareCompletionFeedback } from '../services/completionNotifier';
 import { generationClient } from '../services/generationClient';
+import { buildCreativeCanvasImport, type CreativeImportResult } from '../services/creativeCanvas';
+import type { CreativeRunResult } from '../services/creativeStudioClient';
 import { generationSyncError, isMissingCanvasNodeError } from '../services/generationRunPolicy';
 import { projectRepository, projectServerJobState } from '../services/projectRepository';
 import { persistentEdgeChanges, persistentNodeChanges } from './nodeChangePolicy';
@@ -156,7 +158,7 @@ interface CanvasStore {
   setViewport: (viewport: Viewport) => void;
   setNodePositions: (positions: Array<{ id: string; position: { x: number; y: number } }>) => void;
   alignSelectedNodes: (alignment: NodeAlignment, spacing: number) => void;
-  saveNow: () => void;
+  saveNow: () => Promise<void>;
   addNode: (kind: NodeKind, position?: { x: number; y: number }) => void;
   createImportedMediaNode: (
     media: Pick<ImportedMedia, 'name' | 'type' | 'mimeType' | 'size'>,
@@ -190,6 +192,7 @@ interface CanvasStore {
   ) => void;
   createReferencedNodeFromGroup: (kind: NodeKind, groupId: string, position?: { x: number; y: number }) => void;
   createNodeFromStoryboardShot: (storyboardNodeId: string, shot: StoryboardShot, kind: 'image' | 'video') => void;
+  importCreativeDraft: (result: CreativeRunResult) => Promise<CreativeImportResult>;
   runNode: (nodeId: string) => Promise<void>;
   reconcileGenerationJobs: (jobs: GenerationJob[]) => void;
   resumeGenerationJobs: () => void;
@@ -1028,7 +1031,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
   },
 
   saveNow: () => {
-    void projectRepository.flush();
+    return projectRepository.flush();
   },
 
   addNode: (kind, position) => {
@@ -1417,6 +1420,34 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
         lastSavedAt: saveProject(project),
       };
     });
+  },
+
+  importCreativeDraft: async (result) => {
+    if (projectRepository.getSyncStatus() === 'conflict') throw new Error('画布有同步冲突，草稿已保留；请先处理冲突再导入。');
+    await projectRepository.flush();
+    if (projectRepository.getSyncStatus() !== 'synced') throw new Error('画布尚未同步到服务器，草稿已保留，未导入。');
+    let imported: CreativeImportResult = { nodeIds: [], imageNodeIds: [] };
+    set((state) => {
+      const canvas = state.project.canvases.find((item) => item.id === result.canvasId);
+      if (!canvas) throw new Error('目标画布已不存在，草稿未导入。');
+      const built = buildCreativeCanvasImport(result, canvas, makeNode);
+      imported = { nodeIds: built.nodeIds, imageNodeIds: built.imageNodeIds };
+      if (!built.nodes.length) return state;
+      const timestamp = nowIso();
+      const project = {
+        ...state.project, updatedAt: timestamp,
+        canvases: state.project.canvases.map((item) => item.id === canvas.id ? {
+          ...item, updatedAt: timestamp, nodes: [...item.nodes, ...built.nodes], edges: [...item.edges, ...built.edges],
+        } : item),
+      };
+      return { project, activeCanvas: activeCanvasOf(project), lastSavedAt: saveProject(project) };
+    });
+    // The existing repository uses CAS. A concurrent writer produces a conflict,
+    // never a forced overwrite; keep the local draft available for recovery.
+    await projectRepository.flush();
+    if (projectRepository.getSyncStatus() !== 'synced') throw new Error('草稿已留在本机，但同步未完成；未开始生成，请先处理同步状态。');
+    if (imported.nodeIds[0]) get().revealNode(imported.nodeIds[0], result.canvasId);
+    return imported;
   },
 
   createNodeFromStoryboardShot: (storyboardNodeId, shot, kind) => {

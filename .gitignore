@@ -7,3 +7,14 @@ output
 *.local
 *.log
 coverage
+
+# Local credentials, deployment state and build caches
+.env.*
+!.env.example
+ACCESS.txt
+deploy/aliyun/data/
+__pycache__/
+*.py[cod]
+*.tsbuildinfo
+DerivedData/
+xcuserdata/

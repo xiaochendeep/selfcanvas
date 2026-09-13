@@ -1,0 +1,281 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A00000000000000000000101 /* SelfCanvasMobileApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000201 /* SelfCanvasMobileApp.swift */; };
+		A00000000000000000000102 /* AppModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000202 /* AppModels.swift */; };
+		A00000000000000000000103 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000203 /* APIClient.swift */; };
+		A00000000000000000000104 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000204 /* KeychainStore.swift */; };
+		A00000000000000000000105 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000205 /* AppState.swift */; };
+		A00000000000000000000106 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000206 /* Theme.swift */; };
+		A00000000000000000000107 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000207 /* LoginView.swift */; };
+		A00000000000000000000108 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000208 /* RootView.swift */; };
+		A00000000000000000000109 /* CreateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000209 /* CreateView.swift */; };
+		A0000000000000000000010A /* ProjectsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000020A /* ProjectsView.swift */; };
+		A0000000000000000000010B /* TasksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000020B /* TasksView.swift */; };
+		A0000000000000000000010C /* AssetsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000020C /* AssetsView.swift */; };
+		A0000000000000000000010D /* GenerationViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000020D /* GenerationViews.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		A00000000000000000000010 /* SelfCanvasMobile.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SelfCanvasMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00000000000000000000201 /* SelfCanvasMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelfCanvasMobileApp.swift; sourceTree = "<group>"; };
+		A00000000000000000000202 /* AppModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModels.swift; sourceTree = "<group>"; };
+		A00000000000000000000203 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
+		A00000000000000000000204 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
+		A00000000000000000000205 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
+		A00000000000000000000206 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		A00000000000000000000207 /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
+		A00000000000000000000208 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		A00000000000000000000209 /* CreateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreateView.swift; sourceTree = "<group>"; };
+		A0000000000000000000020A /* ProjectsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectsView.swift; sourceTree = "<group>"; };
+		A0000000000000000000020B /* TasksView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TasksView.swift; sourceTree = "<group>"; };
+		A0000000000000000000020C /* AssetsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssetsView.swift; sourceTree = "<group>"; };
+		A0000000000000000000020D /* GenerationViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GenerationViews.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A00000000000000000000021 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A00000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000002 /* SelfCanvasMobile */,
+				A00000000000000000000003 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A00000000000000000000002 /* SelfCanvasMobile */ = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000201 /* SelfCanvasMobileApp.swift */,
+				A00000000000000000000202 /* AppModels.swift */,
+				A00000000000000000000203 /* APIClient.swift */,
+				A00000000000000000000204 /* KeychainStore.swift */,
+				A00000000000000000000205 /* AppState.swift */,
+				A00000000000000000000206 /* Theme.swift */,
+				A00000000000000000000207 /* LoginView.swift */,
+				A00000000000000000000208 /* RootView.swift */,
+				A00000000000000000000209 /* CreateView.swift */,
+				A0000000000000000000020A /* ProjectsView.swift */,
+				A0000000000000000000020B /* TasksView.swift */,
+				A0000000000000000000020C /* AssetsView.swift */,
+				A0000000000000000000020D /* GenerationViews.swift */,
+			);
+			path = SelfCanvasMobile;
+			sourceTree = "<group>";
+		};
+		A00000000000000000000003 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000010 /* SelfCanvasMobile.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A00000000000000000000011 /* SelfCanvasMobile */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A00000000000000000000032 /* Build configuration list for PBXNativeTarget "SelfCanvasMobile" */;
+			buildPhases = (
+				A00000000000000000000020 /* Sources */,
+				A00000000000000000000021 /* Frameworks */,
+				A00000000000000000000022 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = SelfCanvasMobile;
+			productName = SelfCanvasMobile;
+			productReference = A00000000000000000000010 /* SelfCanvasMobile.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A00000000000000000000000 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2660;
+				LastUpgradeCheck = 2660;
+				TargetAttributes = {
+					A00000000000000000000011 = {
+						CreatedOnToolsVersion = 26.6;
+					};
+				};
+			};
+			buildConfigurationList = A00000000000000000000031 /* Build configuration list for PBXProject "SelfCanvasMobile" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = zh-Hans;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+				"zh-Hans",
+			);
+			mainGroup = A00000000000000000000001;
+			productRefGroup = A00000000000000000000003 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A00000000000000000000011 /* SelfCanvasMobile */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A00000000000000000000022 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A00000000000000000000020 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A00000000000000000000101 /* SelfCanvasMobileApp.swift in Sources */,
+				A00000000000000000000102 /* AppModels.swift in Sources */,
+				A00000000000000000000103 /* APIClient.swift in Sources */,
+				A00000000000000000000104 /* KeychainStore.swift in Sources */,
+				A00000000000000000000105 /* AppState.swift in Sources */,
+				A00000000000000000000106 /* Theme.swift in Sources */,
+				A00000000000000000000107 /* LoginView.swift in Sources */,
+				A00000000000000000000108 /* RootView.swift in Sources */,
+				A00000000000000000000109 /* CreateView.swift in Sources */,
+				A0000000000000000000010A /* ProjectsView.swift in Sources */,
+				A0000000000000000000010B /* TasksView.swift in Sources */,
+				A0000000000000000000010C /* AssetsView.swift in Sources */,
+				A0000000000000000000010D /* GenerationViews.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		A00000000000000000000041 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		A00000000000000000000042 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		A00000000000000000000051 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = SelfCanvas;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.graphics-design";
+				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsArbitraryLoads = YES;
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "连接同一局域网内的 SelfCanvas 与 AnyCap 网关。";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIStatusBarStyle = UIStatusBarStyleLightContent;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ubiquantpartners.selfcanvas;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		A00000000000000000000052 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = SelfCanvas;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.graphics-design";
+				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsArbitraryLoads = YES;
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "连接同一局域网内的 SelfCanvas 与 AnyCap 网关。";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIStatusBarStyle = UIStatusBarStyleLightContent;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ubiquantpartners.selfcanvas;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A00000000000000000000031 /* Build configuration list for PBXProject "SelfCanvasMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A00000000000000000000041 /* Debug */,
+				A00000000000000000000042 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A00000000000000000000032 /* Build configuration list for PBXNativeTarget "SelfCanvasMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A00000000000000000000051 /* Debug */,
+				A00000000000000000000052 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = A00000000000000000000000 /* Project object */;
+}

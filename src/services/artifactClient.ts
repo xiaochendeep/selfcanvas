@@ -37,19 +37,11 @@ function comparableUrl(value: string | undefined) {
   if (!value) return '';
   try {
     const url = new URL(value, window.location.href);
-    return `${decodeURIComponent(url.pathname)}${url.search}`;
+    // A matching path on another provider is not the same asset. URL also
+    // normalizes Unicode/escaped names without decoding reserved path slashes.
+    return `${url.origin}${url.pathname}${url.search}`;
   } catch {
     return value.trim();
-  }
-}
-
-function comparableName(value: string | undefined) {
-  if (!value) return '';
-  const tail = value.split(/[\\/]/).pop() ?? value;
-  try {
-    return decodeURIComponent(tail).toLocaleLowerCase();
-  } catch {
-    return tail.toLocaleLowerCase();
   }
 }
 
@@ -113,9 +105,9 @@ function fileMatchesCanvasMedia(file: GeneratedFile, canvasFile: CanvasMediaFile
   const fileUrls = [file.url, file.previewUrl, file.downloadUrl].map(comparableUrl).filter(Boolean);
   const canvasUrls = [canvasFile.url, canvasFile.previewUrl, canvasFile.downloadUrl].map(comparableUrl).filter(Boolean);
   if (fileUrls.some((value) => canvasUrls.includes(value))) return true;
-  const fileName = comparableName((file as DownloadableGeneratedFile).name || file.title || file.url);
-  const canvasName = comparableName(canvasFile.title || canvasFile.url);
-  return Boolean(fileName && canvasName && fileName === canvasName && (!file.size || !canvasFile.size || file.size === canvasFile.size));
+  // Names and sizes are not identities: exports often share both. Keep an
+  // unmatched remote result pending instead of silently downloading another file.
+  return false;
 }
 
 /**
@@ -186,10 +178,11 @@ export function generatedFileDownloadName(file: GeneratedFile) {
 
 export function isLocallyDownloadableUrl(value: string | undefined) {
   if (!value) return false;
-  if (value.startsWith('/') || value.startsWith('blob:') || value.startsWith('data:')) return true;
   try {
     const url = new URL(value, window.location.href);
-    return url.origin === window.location.origin;
+    if (url.protocol === 'data:') return /^data:(?:image\/(?:png|jpe?g|webp|gif)|video\/(?:mp4|webm)|audio\/[a-z0-9.+-]+)[;,]/i.test(value);
+    if (url.protocol === 'blob:') return url.origin === window.location.origin;
+    return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && url.origin === window.location.origin;
   } catch {
     return false;
   }

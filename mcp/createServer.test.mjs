@@ -22,7 +22,7 @@ async function connectedPair(apiClient, scopes = new Set(ALL_SCOPES)) {
   };
 }
 
-test('registers the nine planned tools with accurate safety annotations', async (t) => {
+test('registers canvas and creative tools with accurate safety annotations', async (t) => {
   const apiClient = {};
   const pair = await connectedPair(apiClient);
   t.after(() => pair.close());
@@ -39,6 +39,8 @@ test('registers the nine planned tools with accurate safety annotations', async 
     'canvas_get_job',
     'canvas_list_artifacts',
     'canvas_prepare_download',
+    'canvas_get_creative_capabilities',
+    'canvas_create_creative_draft',
   ]);
   assert.deepEqual(byName.get('canvas_get_canvas').annotations, {
     readOnlyHint: true,
@@ -50,6 +52,9 @@ test('registers the nine planned tools with accurate safety annotations', async 
   assert.equal(byName.get('canvas_apply_operations').annotations.destructiveHint, true);
   assert.equal(byName.get('canvas_run_node').annotations.openWorldHint, true);
   assert.equal(byName.get('canvas_prepare_download').annotations.destructiveHint, false);
+  assert.equal(byName.get('canvas_get_creative_capabilities').annotations.readOnlyHint, true);
+  assert.equal(byName.get('canvas_create_creative_draft').annotations.openWorldHint, true);
+  assert.equal(byName.get('canvas_create_creative_draft').annotations.destructiveHint, false);
 });
 
 test('tool calls validate input and preserve REST contract arguments', async (t) => {
@@ -114,6 +119,86 @@ test('focus_node is a validated CAS canvas operation', async (t) => {
   });
   assert.equal(result.isError, undefined);
   assert.deepEqual(received.operations, [{ type: 'focus_node', nodeId: 'image-123' }]);
+});
+
+test('bind_references validates source node IDs and applies safe defaults', async (t) => {
+  let received;
+  const pair = await connectedPair({
+    async applyOperations(input) {
+      received = input;
+      return { revision: 6, applied: 1 };
+    },
+  });
+  t.after(() => pair.close());
+
+  const result = await pair.client.callTool({
+    name: 'canvas_apply_operations',
+    arguments: {
+      canvasId: 'canvas_main',
+      baseRevision: 5,
+      requestId: 'bind-request-1234',
+      operations: [
+        {
+          type: 'bind_references',
+          targetNodeId: 'shot-video-01',
+          sourceNodeIds: ['character-shen', 'scene-hospital'],
+        },
+      ],
+    },
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(received.operations, [
+    {
+      type: 'bind_references',
+      targetNodeId: 'shot-video-01',
+      sourceNodeIds: ['character-shen', 'scene-hospital'],
+      ensureEdges: true,
+      appendMentions: true,
+    },
+  ]);
+});
+
+test('bind_references rejects duplicate IDs, self references, and URL fields before REST', async (t) => {
+  let calls = 0;
+  const pair = await connectedPair({
+    async applyOperations() {
+      calls += 1;
+      return { revision: 6 };
+    },
+  });
+  t.after(() => pair.close());
+
+  for (const operation of [
+    {
+      type: 'bind_references',
+      targetNodeId: 'target-video',
+      sourceNodeIds: ['same-node', 'same-node'],
+    },
+    {
+      type: 'bind_references',
+      targetNodeId: 'target-video',
+      sourceNodeIds: ['target-video'],
+    },
+    {
+      type: 'bind_references',
+      targetNodeId: 'target-video',
+      sourceNodeIds: ['source-image'],
+      url: 'https://example.test/unsafe.png',
+    },
+  ]) {
+    const result = await pair.client.callTool({
+      name: 'canvas_apply_operations',
+      arguments: {
+        canvasId: 'canvas_main',
+        baseRevision: 5,
+        requestId: `bind-invalid-${Math.random().toString(36).slice(2)}`,
+        operations: [operation],
+      },
+    });
+    assert.equal(result.isError, true);
+  }
+  assert.equal(calls, 0);
 });
 
 test('video edit schema enforces mode-specific input limits before calling the API', async (t) => {

@@ -27,6 +27,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
 from urllib.request import Request, urlopen
 
+import creative_runtime
+
 
 ROOT = Path(__file__).resolve().parent
 DIST_DIR = ROOT / "dist"
@@ -38,11 +40,15 @@ VIDEO_EDIT_QUEUE_SCRIPT = ROOT / "scripts" / "video-edit-queue.mjs"
 IDEMPOTENCY_PATH = RUNTIME_DIR / "idempotency.json"
 MANAGED_JOBS_PATH = RUNTIME_DIR / "managed-jobs.json"
 ARTIFACT_SECRET_PATH = RUNTIME_DIR / "artifact-secret"
+MOBILE_SESSIONS_PATH = RUNTIME_DIR / "mobile-sessions.json"
 PROJECT_STATE_LOCK = threading.RLock()
 IDEMPOTENCY_LOCK = threading.RLock()
 EXPORT_JOBS_LOCK = threading.RLock()
 MANAGED_JOBS_LOCK = threading.RLock()
 BROWSER_SESSIONS_LOCK = threading.RLock()
+MOBILE_SESSIONS_LOCK = threading.RLock()
+CREATIVE_RUNS_LOCK = threading.RLock()
+CREATIVE_RUN_SLOTS = threading.BoundedSemaphore(2)
 PROJECT_EVENT_CONDITION = threading.Condition()
 EXPORT_JOBS: dict[str, dict] = {}
 BROWSER_SESSIONS: dict[str, dict] = {}
@@ -139,6 +145,199 @@ def artifact_secret() -> bytes:
     except OSError:
         pass
     return secret.encode("ascii")
+
+
+def mobile_auth_secret() -> bytes:
+    configured = os.environ.get("SELF_CANVAS_MOBILE_AUTH_SECRET", "").strip()
+    return configured.encode("utf-8") if configured else artifact_secret()
+
+
+def encode_token_part(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+def decode_token_part(value: str) -> bytes:
+    return base64.urlsafe_b64decode(value + ("=" * (-len(value) % 4)))
+
+
+def mobile_token(payload: dict) -> str:
+    encoded = encode_token_part(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    signed = f"scm1.{encoded}"
+    signature = hmac.new(mobile_auth_secret(), signed.encode("ascii"), hashlib.sha256).digest()
+    return f"{signed}.{encode_token_part(signature)}"
+
+
+def mobile_token_payload(token: str, expected_type: str) -> dict:
+    try:
+        prefix, encoded, signature = token.split(".", 2)
+        if prefix != "scm1":
+            raise ValueError("prefix")
+        signed = f"{prefix}.{encoded}"
+        expected = hmac.new(mobile_auth_secret(), signed.encode("ascii"), hashlib.sha256).digest()
+        actual = decode_token_part(signature)
+        if not hmac.compare_digest(actual, expected):
+            raise ValueError("signature")
+        payload = json.loads(decode_token_part(encoded).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise UploadError(401, "登录状态无效，请重新登录") from error
+    if not isinstance(payload, dict) or payload.get("typ") != expected_type:
+        raise UploadError(401, "登录状态无效，请重新登录")
+    if float(payload.get("exp") or 0) <= time.time():
+        raise UploadError(401, "登录已过期，请重新登录")
+    if not str(payload.get("sid") or "") or not str(payload.get("sub") or ""):
+        raise UploadError(401, "登录状态无效，请重新登录")
+    return payload
+
+
+def read_mobile_sessions_unlocked() -> dict[str, dict]:
+    payload = read_json_file(MOBILE_SESSIONS_PATH, {"sessions": {}})
+    sessions = payload.get("sessions") if isinstance(payload, dict) else {}
+    return sessions if isinstance(sessions, dict) else {}
+
+
+def write_mobile_sessions_unlocked(sessions: dict[str, dict]) -> None:
+    write_json_atomic(MOBILE_SESSIONS_PATH, {"schemaVersion": 1, "sessions": sessions})
+
+
+def prune_mobile_sessions(sessions: dict[str, dict], timestamp: float | None = None) -> bool:
+    current = timestamp if timestamp is not None else time.time()
+    expired = [sid for sid, item in sessions.items() if float(item.get("expiresAt") or 0) <= current]
+    for sid in expired:
+        sessions.pop(sid, None)
+    return bool(expired)
+
+
+def mobile_user_matches(username: str, password: str) -> bool:
+    expected_username = os.environ.get("SELF_CANVAS_MOBILE_USERNAME", "internal").strip() or "internal"
+    if not hmac.compare_digest(username, expected_username):
+        return False
+    expected_hash = os.environ.get("SELF_CANVAS_MOBILE_PASSWORD_SHA256", "").strip().lower()
+    if expected_hash:
+        actual_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
+        return hmac.compare_digest(actual_hash, expected_hash)
+    # Backward-compatible fallback for the first internal build. Deployments
+    # should set SELF_CANVAS_MOBILE_PASSWORD so the API token is never typed in
+    # by an end user.
+    expected_password = os.environ.get("SELF_CANVAS_MOBILE_PASSWORD", "").strip()
+    if not expected_password:
+        expected_password = os.environ.get("SELF_CANVAS_API_TOKEN", "").strip()
+    return bool(expected_password and hmac.compare_digest(password, expected_password))
+
+
+def mobile_auth_ttl(name: str, fallback: int, minimum: int, maximum: int) -> int:
+    return bounded_env_int(name, fallback, minimum, maximum)
+
+
+def issue_mobile_auth_tokens(username: str, session_id: str | None = None) -> tuple[dict, dict]:
+    timestamp = time.time()
+    access_ttl = mobile_auth_ttl("SELF_CANVAS_MOBILE_ACCESS_TTL_SECONDS", 15 * 60, 5 * 60, 24 * 60 * 60)
+    refresh_ttl = mobile_auth_ttl("SELF_CANVAS_MOBILE_REFRESH_TTL_SECONDS", 30 * 24 * 60 * 60, 60 * 60, 180 * 24 * 60 * 60)
+    sid = session_id or f"mobile_{uuid.uuid4().hex}"
+    access_payload = {
+        "typ": "access",
+        "sub": username,
+        "sid": sid,
+        "iat": int(timestamp),
+        "exp": int(timestamp + access_ttl),
+        "jti": uuid.uuid4().hex,
+        "scopes": ["canvas:read", "canvas:write", "generation:read", "generation:run", "artifacts:read"],
+    }
+    refresh_payload = {
+        "typ": "refresh",
+        "sub": username,
+        "sid": sid,
+        "iat": int(timestamp),
+        "exp": int(timestamp + refresh_ttl),
+        "jti": uuid.uuid4().hex,
+    }
+    access_token = mobile_token(access_payload)
+    refresh_token = mobile_token(refresh_payload)
+    session = {
+        "username": username,
+        "refreshHash": hashlib.sha256(refresh_token.encode("utf-8")).hexdigest(),
+        "createdAt": now_iso(),
+        "expiresAt": refresh_payload["exp"],
+    }
+    response = {
+        "tokenType": "Bearer",
+        "accessToken": access_token,
+        "refreshToken": refresh_token,
+        "expiresIn": access_ttl,
+        "expiresAt": datetime.fromtimestamp(access_payload["exp"], timezone.utc).isoformat(),
+        "user": {
+            "id": hashlib.sha256(username.encode("utf-8")).hexdigest()[:16],
+            "username": username,
+            "roles": ["creator"],
+        },
+    }
+    return response, session
+
+
+def mobile_login(body: dict) -> dict:
+    username = str(body.get("username") or "").strip()
+    password = str(body.get("password") or "")
+    if not username or not password:
+        raise UploadError(400, "请输入账号和密码")
+    if not mobile_user_matches(username, password):
+        # A small constant delay makes trivial credential probing less useful
+        # without blocking the threaded server for a noticeable period.
+        time.sleep(0.08)
+        raise UploadError(401, "账号或密码不正确")
+    response, session = issue_mobile_auth_tokens(username)
+    sid = mobile_token_payload(response["accessToken"], "access")["sid"]
+    with MOBILE_SESSIONS_LOCK:
+        sessions = read_mobile_sessions_unlocked()
+        prune_mobile_sessions(sessions)
+        sessions[sid] = session
+        write_mobile_sessions_unlocked(sessions)
+    return response
+
+
+def mobile_refresh(body: dict) -> dict:
+    refresh_token = str(body.get("refreshToken") or "").strip()
+    if not refresh_token:
+        raise UploadError(400, "缺少 refreshToken")
+    payload = mobile_token_payload(refresh_token, "refresh")
+    session_id = str(payload["sid"])
+    username = str(payload["sub"])
+    with MOBILE_SESSIONS_LOCK:
+        sessions = read_mobile_sessions_unlocked()
+        dirty = prune_mobile_sessions(sessions)
+        session = sessions.get(session_id)
+        expected_hash = str(session.get("refreshHash") or "") if isinstance(session, dict) else ""
+        actual_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+        if not expected_hash or not hmac.compare_digest(expected_hash, actual_hash):
+            if dirty:
+                write_mobile_sessions_unlocked(sessions)
+            raise UploadError(401, "登录已失效，请重新登录")
+        response, next_session = issue_mobile_auth_tokens(username, session_id)
+        next_session["createdAt"] = session.get("createdAt") or now_iso()
+        sessions[session_id] = next_session
+        write_mobile_sessions_unlocked(sessions)
+    return response
+
+
+def mobile_logout(handler: BaseHTTPRequestHandler, body: dict) -> dict:
+    session_id = ""
+    authorization = str(handler.headers.get("Authorization") or "")
+    access_token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+    refresh_token = str(body.get("refreshToken") or "").strip()
+    for token, token_type in ((access_token, "access"), (refresh_token, "refresh")):
+        if not token:
+            continue
+        try:
+            session_id = str(mobile_token_payload(token, token_type).get("sid") or "")
+            if session_id:
+                break
+        except UploadError:
+            continue
+    if session_id:
+        with MOBILE_SESSIONS_LOCK:
+            sessions = read_mobile_sessions_unlocked()
+            sessions.pop(session_id, None)
+            prune_mobile_sessions(sessions)
+            write_mobile_sessions_unlocked(sessions)
+    return {"ok": True}
 
 
 def artifact_id_for_relative(relative: str) -> str:
@@ -554,6 +753,246 @@ def build_canvas_node(raw: dict) -> dict:
     }
 
 
+def canvas_node_output_type(node: dict) -> str:
+    data = node.get("data") if isinstance(node.get("data"), dict) else {}
+    outputs = data.get("outputs") if isinstance(data.get("outputs"), dict) else {}
+    if outputs.get("videoUrl"):
+        return "video"
+    if outputs.get("audioUrl"):
+        return "audio"
+    if outputs.get("imageUrl"):
+        return "image"
+    if outputs.get("text"):
+        return "text"
+    kind = str(data.get("kind") or "")
+    if kind == "video":
+        return "video"
+    if kind == "audio":
+        return "audio"
+    if kind in {"image", "asset", "upload"}:
+        return "image"
+    if kind in {"text", "storyboard"}:
+        return "text"
+    return "other"
+
+
+def canvas_node_to_reference(node: dict) -> dict:
+    """Mirror src/utils/nodeReferences.ts nodeToReference for trusted canvas nodes."""
+    data = node.get("data") if isinstance(node.get("data"), dict) else {}
+    outputs = data.get("outputs") if isinstance(data.get("outputs"), dict) else {}
+    imported_media = data.get("importedMedia") if isinstance(data.get("importedMedia"), dict) else {}
+    output_type = canvas_node_output_type(node)
+    if output_type not in {"image", "video", "audio", "text"}:
+        raise UploadError(400, f"节点 {str(node.get('id') or '')} 没有可引用的图片、视频、音频或文本输出")
+    url = str(
+        outputs.get("imageUrl")
+        or outputs.get("videoUrl")
+        or outputs.get("audioUrl")
+        or outputs.get("fileUrl")
+        or ""
+    )
+    title = str(
+        outputs.get("assetName")
+        or imported_media.get("name")
+        or data.get("title")
+        or data.get("prompt")
+        or node.get("id")
+        or "未命名"
+    )
+    reference = {
+        "nodeId": str(node.get("id") or ""),
+        "title": title,
+        "kind": str(data.get("kind") or "other"),
+        "outputType": output_type,
+        "source": "canvas",
+    }
+    if url:
+        reference["url"] = url
+    raw_path = str(imported_media.get("path") or "")
+    if raw_path:
+        reference["path"] = raw_path
+    if output_type in {"image", "video"} and url:
+        reference["thumbnailUrl"] = url
+    if output_type == "text":
+        content = str(outputs.get("text") or "").strip()
+        if content:
+            reference["content"] = content
+    return reference
+
+
+def canvas_reference_key(reference: dict) -> str:
+    source = str(reference.get("source") or "canvas")
+    group_id = str(reference.get("groupId") or "solo")
+    return f"{source}:{group_id}:{str(reference.get('nodeId') or '')}"
+
+
+def utf16_length(value: str) -> int:
+    return len(value.encode("utf-16-le")) // 2
+
+
+def utf16_slice(value: str, start: int, end: int) -> str | None:
+    boundaries = {0: 0}
+    offset = 0
+    for index, character in enumerate(value):
+        offset += utf16_length(character)
+        boundaries[offset] = index + 1
+    if start not in boundaries or end not in boundaries:
+        return None
+    return value[boundaries[start] : boundaries[end]]
+
+
+def valid_prompt_mentions(prompt: str, references: list[dict], raw_mentions) -> list[dict]:
+    if not isinstance(raw_mentions, list):
+        return []
+    reference_keys = {canvas_reference_key(reference) for reference in references if isinstance(reference, dict)}
+    candidates = []
+    for raw in raw_mentions:
+        if not isinstance(raw, dict):
+            continue
+        reference_key = str(raw.get("referenceKey") or "")
+        text = str(raw.get("text") or "")
+        start, end = raw.get("start"), raw.get("end")
+        if (
+            reference_key not in reference_keys
+            or not text
+            or isinstance(start, bool)
+            or isinstance(end, bool)
+            or not isinstance(start, int)
+            or not isinstance(end, int)
+            or start < 0
+            or end <= start
+            or utf16_slice(prompt, start, end) != text
+        ):
+            continue
+        candidates.append(
+            {
+                "id": str(raw.get("id") or f"mention_{uuid.uuid4().hex}"),
+                "referenceKey": reference_key,
+                "text": text,
+                "start": start,
+                "end": end,
+            }
+        )
+    candidates.sort(key=lambda mention: (mention["start"], mention["end"]))
+    valid = []
+    for mention in candidates:
+        if valid and mention["start"] < valid[-1]["end"]:
+            continue
+        valid.append(mention)
+    return valid
+
+
+def safe_reference_mention_title(reference: dict) -> str:
+    title = re.sub(r"\s+", " ", str(reference.get("title") or "")).strip().replace("@", "＠")
+    return (title or str(reference.get("nodeId") or "未命名素材"))[:160]
+
+
+def unique_reference_mention_text(prompt: str, reference: dict, used_texts: set[str]) -> str:
+    base = safe_reference_mention_title(reference)
+    candidate = f"@{base}"
+    if candidate not in used_texts and candidate not in prompt:
+        return candidate
+    node_id = str(reference.get("nodeId") or "source")
+    suffix = node_id[-24:]
+    candidate = f"@{base} · {suffix}"
+    serial = 2
+    while candidate in used_texts or candidate in prompt:
+        candidate = f"@{base} · {suffix}-{serial}"
+        serial += 1
+    return candidate
+
+
+def merge_canvas_references(existing, additions: list[dict]) -> list[dict]:
+    merged = [copy.deepcopy(reference) for reference in existing if isinstance(reference, dict)] if isinstance(existing, list) else []
+    index_by_key = {canvas_reference_key(reference): index for index, reference in enumerate(merged)}
+    for reference in additions:
+        key = canvas_reference_key(reference)
+        if key in index_by_key:
+            merged[index_by_key[key]] = reference
+        else:
+            index_by_key[key] = len(merged)
+            merged.append(reference)
+    return merged
+
+
+def bind_canvas_references(canvas: dict, operation: dict, edges: list[dict]) -> None:
+    allowed_fields = {"type", "targetNodeId", "sourceNodeIds", "ensureEdges", "appendMentions"}
+    unknown_fields = set(operation) - allowed_fields
+    if unknown_fields:
+        raise UploadError(400, f"bind_references 包含不支持的字段：{', '.join(sorted(unknown_fields))}")
+    target_id = operation.get("targetNodeId")
+    source_ids = operation.get("sourceNodeIds")
+    if not isinstance(target_id, str) or not re.fullmatch(r"[A-Za-z0-9._:-]{1,160}", target_id):
+        raise UploadError(400, "targetNodeId 格式无效")
+    if not isinstance(source_ids, list) or not 1 <= len(source_ids) <= 9:
+        raise UploadError(400, "sourceNodeIds 必须包含 1–9 个节点 ID")
+    if any(not isinstance(node_id, str) or not re.fullmatch(r"[A-Za-z0-9._:-]{1,160}", node_id) for node_id in source_ids):
+        raise UploadError(400, "sourceNodeIds 格式无效")
+    if len(set(source_ids)) != len(source_ids):
+        raise UploadError(400, "sourceNodeIds 不可重复")
+    if target_id in source_ids:
+        raise UploadError(400, "不能将节点引用到自身")
+    for field in ("ensureEdges", "appendMentions"):
+        if field in operation and not isinstance(operation[field], bool):
+            raise UploadError(400, f"{field} 必须是布尔值")
+    ensure_edges = operation.get("ensureEdges", True)
+    append_mentions = operation.get("appendMentions", True)
+
+    target = find_canvas_node(canvas, target_id)
+    sources = [find_canvas_node(canvas, source_id) for source_id in source_ids]
+    additions = [canvas_node_to_reference(source) for source in sources]
+    target_data = target.setdefault("data", {})
+    references = merge_canvas_references(target_data.get("references"), additions)
+    target_data["references"] = references
+
+    if append_mentions:
+        prompt = str(target_data.get("prompt") or "")
+        mentions = valid_prompt_mentions(prompt, references, target_data.get("referenceMentions"))
+        mentioned_keys = {mention["referenceKey"] for mention in mentions}
+        used_texts = {mention["text"] for mention in mentions}
+        for reference in additions:
+            reference_key = canvas_reference_key(reference)
+            if reference_key in mentioned_keys:
+                continue
+            mention_text = unique_reference_mention_text(prompt, reference, used_texts)
+            separator = " " if prompt and not prompt[-1].isspace() else ""
+            start = utf16_length(prompt + separator)
+            next_prompt = f"{prompt}{separator}{mention_text}"
+            if utf16_length(next_prompt) > 20_000:
+                raise UploadError(400, "追加引用后 prompt 超过 20,000 字符限制")
+            mentions.append(
+                {
+                    "id": f"mention_{uuid.uuid4().hex}",
+                    "referenceKey": reference_key,
+                    "text": mention_text,
+                    "start": start,
+                    "end": start + utf16_length(mention_text),
+                }
+            )
+            mentioned_keys.add(reference_key)
+            used_texts.add(mention_text)
+            prompt = next_prompt
+        target_data["prompt"] = prompt
+        target_data["referenceMentions"] = mentions
+
+    if ensure_edges:
+        for source_id in source_ids:
+            if not any(
+                str(edge.get("source")) == source_id and str(edge.get("target")) == target_id
+                and not (isinstance(edge.get("data"), dict) and edge["data"].get("sourceGroupId"))
+                for edge in edges
+                if isinstance(edge, dict)
+            ):
+                edges.append(
+                    {
+                        "id": f"edge_{uuid.uuid4().hex[:12]}",
+                        "source": source_id,
+                        "target": target_id,
+                        "type": "default",
+                    }
+                )
+
+
 def apply_canvas_operations(canvas_id: str, body: dict) -> dict:
     request_id = require_request_id(body)
     key = f"operations:{canvas_id}:{request_id}"
@@ -615,6 +1054,8 @@ def apply_canvas_operations(canvas_id: str, body: dict) -> dict:
                         data["providerOptions"] = sanitize_options(
                             str(data.get("kind") or "text"), {"options": patch.get("providerOptions") or {}}
                         )
+                elif operation_type == "bind_references":
+                    bind_canvas_references(canvas, operation, edges)
                 elif operation_type == "move_node":
                     node = find_canvas_node(canvas, str(operation.get("nodeId") or ""))
                     position = operation.get("position") if isinstance(operation.get("position"), dict) else {}
@@ -676,11 +1117,13 @@ def apply_canvas_operations(canvas_id: str, body: dict) -> dict:
     return result
 
 
-def send_json(handler: BaseHTTPRequestHandler, status: int, payload) -> None:
+def send_json(handler: BaseHTTPRequestHandler, status: int, payload, headers: dict[str, str] | None = None) -> None:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
+    for name, value in (headers or {}).items():
+        handler.send_header(name, value)
     handler.end_headers()
     handler.wfile.write(body)
 
@@ -841,6 +1284,10 @@ PROVIDER_TOOL_LABELS = {
 
 
 ANYCAP_VIDEO_MODEL_ALIASES = {
+    "h3": "minimax-h3",
+    "minimaxh3": "minimax-h3",
+    "seedance2mini": "seedance-2-mini",
+    "seedance25": "seedance-2.5",
     "seedance2": "seedance-2",
     "seedance20": "seedance-2",
     "seedance20fast": "seedance-2-fast",
@@ -873,6 +1320,21 @@ NO_MEDIA_LIMITS = {"image": 0, "video": 0, "audio": 0}
 SEEDANCE_RATIOS = ["16:9", "3:4", "21:9", "9:16", "4:3", "1:1"]
 
 ANYCAP_VIDEO_CAPABILITIES = {
+    "seedance-2.5": {
+        "supportsGenerateAudio": True,
+        "mode": "multi-modal-reference",
+        "modes": ["multi-modal-reference", "image-to-video", "text-to-video"],
+        "resolutions": ["480p", "720p", "1080p"],
+        "durations": number_range(4, 15),
+        "defaultDuration": 6,
+        "aspectRatios": ["3:4", "21:9", "9:16", "16:9", "4:3", "1:1"],
+        "references": {"image": 9, "video": 3, "audio": 3},
+        "referencesByMode": {
+            "text-to-video": NO_MEDIA_LIMITS,
+            "image-to-video": {"image": 9, "video": 0, "audio": 0},
+            "multi-modal-reference": {"image": 9, "video": 3, "audio": 3},
+        },
+    },
     "seedance-2-fast": {
         "supportsGenerateAudio": True,
         "mode": "multi-modal-reference",
@@ -1027,7 +1489,68 @@ def is_kling_model(model: str) -> bool:
     return model_key(model).startswith("kling")
 
 
+def anycap_catalog() -> dict:
+    snapshot = read_json_file(ROOT / "docs" / "anycap" / "catalog-2026-09-08.json", {"models": []})
+    cached = read_json_file(RUNTIME_DIR / "anycap-catalog.json", {})
+    return cached if isinstance(cached, dict) and cached.get("models") else snapshot
+
+
+def anycap_model(model: str) -> dict:
+    aliases = {"suno-v5-5": "suno-v5.5", "elevenlabs-music": "elevanlabs-music"}
+    model_id = aliases.get(model, canonical_video_model(model))
+    return next((item for item in anycap_catalog().get("models", []) if item.get("id") == model_id), {})
+
+
+def anycap_mode_options(parameters: dict, mode: str) -> dict:
+    references = {}
+    minimums = {}
+    for media_type, param in (("image", "images"), ("video", "videos"), ("audio", "audios")):
+        definition = parameters.get(param) or {}
+        references[media_type] = int(definition.get("maxItems", 1)) if definition else 0
+        minimums[media_type] = int(definition.get("minItems", 0))
+    if parameters.get("first_frame") and parameters.get("last_frame"):
+        references["image"] = minimums["image"] = 2
+    return {
+        "mode": mode,
+        "resolutions": parameters.get("resolution", {}).get("enum", []),
+        "durations": parameters.get("duration", {}).get("enum", []),
+        "aspectRatios": parameters.get("aspect_ratio", {}).get("enum", []),
+        "formats": parameters.get("format", {}).get("enum", []),
+        "sampleRates": parameters.get("sample_rate", {}).get("enum", []),
+        "supportsGenerateAudio": bool(parameters.get("generate_audio")),
+        "supportsAdaptive": "adaptive" in parameters.get("aspect_ratio", {}).get("enum", []),
+        "references": references,
+        "referenceMinimums": minimums,
+    }
+
+
+def anycap_descriptor(model: str) -> dict:
+    entry = anycap_model(model)
+    schemas = [item for item in entry.get("schemas", []) if item.get("operation") == "generate"]
+    if not schemas:
+        return {}
+    modes = [item["mode"] for item in schemas]
+    mode = "multi-modal-reference" if "multi-modal-reference" in modes else modes[0]
+    parameters = {item["mode"]: item["parameters"] for item in schemas}
+    mode_options = {key: anycap_mode_options(value, key) for key, value in parameters.items()}
+    selected = mode_options[mode]
+    durations = selected["durations"]
+    return {
+        **selected, "capability": entry["capability"], "modes": modes,
+        "id": entry["id"], "defaultMode": mode,
+        "referenceLimits": selected["references"],
+        "referenceLimitsByMode": {key: value["references"] for key, value in mode_options.items()},
+        "supportsMultiShot": "multi-shot-video" in modes,
+        "parametersByMode": parameters, "modeOptions": mode_options,
+        "defaultDuration": 6 if 6 in durations else (durations[0] if durations else None),
+        "referencesByMode": {key: value["references"] for key, value in mode_options.items()},
+    }
+
+
 def video_capability(model: str) -> dict:
+    descriptor = anycap_descriptor(model)
+    if descriptor:
+        return descriptor
     return ANYCAP_VIDEO_CAPABILITIES.get(canonical_video_model(model), {
         "mode": "text-to-video",
         "modes": ["text-to-video", "image-to-video"],
@@ -1075,7 +1598,11 @@ def route_provider(kind: str, requested: str = "", provider_tool: str = "") -> s
 def route_model(kind: str, requested: str) -> str:
     requested = requested or ""
     if requested and not requested.startswith("mock-") and not requested.startswith("local-"):
-        return canonical_video_model(requested) if kind == "video" else requested
+        if kind == "video":
+            return canonical_video_model(requested)
+        if kind == "audio":
+            return {"suno-v5-5": "suno-v5.5", "elevenlabs-music": "elevanlabs-music"}.get(requested, requested)
+        return requested
     if kind == "text":
         return os.environ.get("SUB2API_TEXT_MODEL", "gpt-4o-mini")
     if kind == "image":
@@ -1223,6 +1750,7 @@ def queue_available() -> tuple[bool, str]:
 OPTION_ALLOWLIST = {
     "text": {"providerTool", "model", "temperature", "systemPrompt"},
     "image": {
+        "mode",
         "providerTool",
         "model",
         "size",
@@ -1264,6 +1792,9 @@ OPTION_ALLOWLIST = {
         "voiceReference",
         "targetVoice",
         "voiceMode",
+        "format", "sampleRate", "speechRate", "pitchRate", "loudnessRate",
+        "speakerIds", "enableSubtitle", "tags", "title", "lyrics", "makeInstrumental",
+        "customMode", "vocalGender", "musicDurationMs",
     },
     "storyboard": {"providerTool", "model", "temperature", "systemPrompt", "promptMode", "viewMode", "shotCount"},
 }
@@ -1287,6 +1818,10 @@ def sanitize_options(kind: str, payload: dict) -> dict:
     for key, value in raw.items():
         if isinstance(value, (str, int, float, bool)) and value is not None:
             clean[key] = value
+        elif kind == "audio" and key == "speakerIds":
+            if not isinstance(value, list) or len(value) > 1 or any(not isinstance(item, str) for item in value):
+                raise RuntimeError("speakerIds 必须是至多一个音色 ID 的数组")
+            clean[key] = [item.strip()[:256] for item in value if item.strip()]
         elif kind == "video" and key in {"clips", "editPlan"}:
             encoded = json.dumps(value, ensure_ascii=False)
             if len(encoded) > 160_000:
@@ -1366,6 +1901,7 @@ def normalize_video_options(model: str, options: dict) -> dict:
     modes = capability.get("modes") or []
     requested_mode = str(options.get("mode") or "")
     mode = requested_mode if requested_mode in modes else capability.get("mode", "text-to-video")
+    capability = {**capability, **capability.get("modeOptions", {}).get(mode, {})}
     clean = {**options, "mode": mode, "multiShot": mode == "multi-shot-video"}
     durations = capability.get("durations") or []
     if durations:
@@ -1378,7 +1914,7 @@ def normalize_video_options(model: str, options: dict) -> dict:
         clean.pop("resolution", None)
     ratios = capability.get("aspectRatios") or []
     aspect_ratio = str(clean.get("aspectRatio") or "adaptive")
-    clean["aspectRatio"] = aspect_ratio if aspect_ratio == "adaptive" or aspect_ratio in ratios else "adaptive"
+    clean["aspectRatio"] = aspect_ratio if aspect_ratio in ratios else (ratios[0] if ratios else "adaptive")
     if mode == "multi-shot-video":
         try:
             shot_count = int(clean.get("shotCount") or 3)
@@ -1395,21 +1931,41 @@ def normalize_video_options(model: str, options: dict) -> dict:
 
 
 def validate_video_references(model: str, references: list[dict], mode: str = "") -> None:
-    if not references:
-        return
     counts = {"image": 0, "video": 0, "audio": 0}
     for ref in references:
         output_type = ref.get("outputType")
         if output_type in counts:
             counts[output_type] += 1
     limits = video_reference_limits(model, mode)
+    minimums = video_capability(model).get("modeOptions", {}).get(mode, {}).get("referenceMinimums", {})
     labels = {"image": "参考图", "video": "参考视频", "audio": "参考音频"}
     for output_type, count in counts.items():
+        minimum = int(minimums.get(output_type) or 0)
+        if count < minimum:
+            raise RuntimeError(f"{model} 当前模式需要至少 {minimum} 个{labels[output_type]}")
         limit = int(limits.get(output_type) or 0)
         if count > limit:
             if limit <= 0:
                 raise RuntimeError(f"{model} 当前模式暂不支持{labels[output_type]}")
             raise RuntimeError(f"{model} 最多支持 {limit} 个{labels[output_type]}，当前是 {count} 个")
+
+
+def normalize_anycap_audio_options(model: str, options: dict, references: list[dict], prompt: str) -> dict:
+    descriptor = anycap_descriptor(model)
+    if not descriptor or descriptor.get("capability") not in {"audio", "music"}:
+        raise RuntimeError(f"音频模型 {model} 尚未同步，请刷新 AnyCap 模型列表")
+    mode = options.get("mode") if options.get("mode") in descriptor["modes"] else descriptor["mode"]
+    parameters = descriptor["parametersByMode"][mode]
+    limits = descriptor["modeOptions"][mode]
+    for media_type, maximum in limits["references"].items():
+        count = len({ref.get("path") or ref.get("url") or ref.get("nodeId") for ref in references if ref.get("outputType") == media_type})
+        minimum = limits["referenceMinimums"][media_type]
+        if count < minimum or count > maximum:
+            raise RuntimeError(f"{model} / {mode} 需要 {minimum}–{maximum} 个 {media_type} 参考，当前 {count} 个")
+    max_length = parameters.get("prompt", {}).get("maxLength")
+    if max_length and len(prompt) > max_length:
+        raise RuntimeError(f"{model} 提示词最多 {max_length} 个字符")
+    return {**options, "mode": mode}
 
 
 def create_job(payload: dict):
@@ -1424,6 +1980,8 @@ def create_job(payload: dict):
     requested_model = str(options.get("model") or payload.get("model") or "")
     provider_tool = str(options.get("providerTool") or "")
     model = route_model(kind, requested_model)
+    if kind == "audio" and provider_tool in {"", "anycap"}:
+        options = normalize_anycap_audio_options(model, options, references, str(payload.get("prompt") or ""))
     if kind == "video":
         if use_video_queue:
             video_references = [reference for reference in references if reference.get("outputType") == "video"]
@@ -2014,11 +2572,49 @@ def browser_session_valid(handler: BaseHTTPRequestHandler) -> bool:
     return True
 
 
-def bearer_api_token_valid(handler: BaseHTTPRequestHandler) -> bool:
+def static_api_token_valid(handler: BaseHTTPRequestHandler) -> bool:
     expected = os.environ.get("SELF_CANVAS_API_TOKEN", "").strip()
     authorization = str(handler.headers.get("Authorization") or "")
     token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
     return bool(expected and token and hmac.compare_digest(token, expected))
+
+
+def mobile_access_token_valid(handler: BaseHTTPRequestHandler) -> bool:
+    authorization = str(handler.headers.get("Authorization") or "")
+    token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+    if not token.startswith("scm1."):
+        return False
+    try:
+        payload = mobile_token_payload(token, "access")
+    except UploadError:
+        return False
+    session_id = str(payload.get("sid") or "")
+    username = str(payload.get("sub") or "")
+    with MOBILE_SESSIONS_LOCK:
+        sessions = read_mobile_sessions_unlocked()
+        dirty = prune_mobile_sessions(sessions)
+        session = sessions.get(session_id)
+        if dirty:
+            write_mobile_sessions_unlocked(sessions)
+    return bool(isinstance(session, dict) and hmac.compare_digest(str(session.get("username") or ""), username))
+
+
+def mobile_current_user(handler: BaseHTTPRequestHandler) -> dict:
+    authorization = str(handler.headers.get("Authorization") or "")
+    token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+    payload = mobile_token_payload(token, "access")
+    if not mobile_access_token_valid(handler):
+        raise UploadError(401, "登录已失效，请重新登录")
+    username = str(payload["sub"])
+    return {
+        "id": hashlib.sha256(username.encode("utf-8")).hexdigest()[:16],
+        "username": username,
+        "roles": ["creator"],
+    }
+
+
+def bearer_api_token_valid(handler: BaseHTTPRequestHandler) -> bool:
+    return static_api_token_valid(handler) or mobile_access_token_valid(handler)
 
 
 def require_v2_api_token(handler: BaseHTTPRequestHandler) -> None:
@@ -2348,7 +2944,7 @@ def model_items_from_payload(payload) -> list[dict]:
         models.append(
             {
                 "id": canonical_video_model(model_id),
-                "label": str(item.get("label") or item.get("name") or model_id),
+                "label": str(item.get("display_name") or item.get("label") or item.get("name") or model_id),
                 "rawId": model_id,
                 "description": str(item.get("description") or item.get("hint") or item.get("provider") or ""),
             }
@@ -2471,51 +3067,70 @@ def anycap_login_poll(body: dict) -> dict:
 
 
 def anycap_capabilities_payload(body: dict) -> dict:
-    endpoint = str(body.get("endpoint") or "")
-    status = anycap_status_payload({"endpoint": endpoint})
-    if status.get("mode") != "cli":
-        return {
-            **status,
-            "capabilities": [],
-            "videoCapabilities": ANYCAP_VIDEO_CAPABILITIES,
-            "message": status.get("message") or "AnyCap 网关模式暂不支持 CLI 模型扫描。",
-        }
+    # Catalogs contain no credentials. Fetch the public schema independently of
+    # login so expired credentials do not make the model picker disappear.
+    endpoint = str(body.get("endpoint") or "").strip()
+    base_url = endpoint if is_http_url(endpoint) else os.environ.get("ANYCAP_ENDPOINT", "https://api.anycap.ai")
+    base_url = base_url.rstrip("/")
+    catalog = anycap_catalog()
+    source = "cached" if catalog.get("fetchedAt") else "bundled"
+    recent = catalog.get("endpoint") == base_url and time.time() - float(catalog.get("fetchedAt") or 0) < 300
+    if body.get("refresh") is True or not recent:
+        cap_ids = ("image", "video", "audio", "music")
+        def fetch_models(capability):
+            result = http_json_request(f"{base_url}/v1/{capability}/models", timeout=5)
+            payload = result.get("payload") or {}
+            models = payload.get("models") if isinstance(payload, dict) else None
+            return capability, models if result.get("available") and isinstance(models, list) else None
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            listings = dict(executor.map(fetch_models, cap_ids))
+        live_models = [(cap, item) for cap, items in listings.items() if items is not None for item in items if isinstance(item, dict)]
+        def fetch_schema(pair):
+            capability, item = pair
+            model_id = str(item.get("model") or item.get("id") or "")
+            if not model_id or not re.fullmatch(r"[a-zA-Z0-9._-]+", model_id):
+                return None
+            result = http_json_request(f"{base_url}/v1/{capability}/models/{quote(model_id)}/schema", timeout=6)
+            payload = result.get("payload") or {}
+            schemas = payload.get("schemas", []) if isinstance(payload, dict) else []
+            cleaned = [
+                {"operation": row.get("operation"), "mode": row.get("mode"), "parameters": row["schema"]["model_params"]}
+                for row in schemas if isinstance(row, dict) and isinstance(row.get("schema"), dict)
+                and isinstance(row["schema"].get("model_params"), dict) and row.get("operation") == "generate"
+            ]
+            if not result.get("available") or not cleaned:
+                return None
+            return {"id": model_id, "capability": capability, "label": item.get("display_name") or model_id,
+                    "description": str(item.get("description") or ""), "operations": item.get("operations") or [], "schemas": cleaned}
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            updated = [item for item in executor.map(fetch_schema, live_models) if item]
+        if updated:
+            # A partial refresh retains known schemas rather than substituting
+            # invented defaults for a temporarily unavailable model schema.
+            merged = {item["id"]: item for item in catalog.get("models", [])}
+            merged.update({item["id"]: item for item in updated})
+            for capability, items in listings.items():
+                if items is not None:
+                    active = {str(item.get("model") or item.get("id") or "") for item in items if isinstance(item, dict)}
+                    merged = {key: value for key, value in merged.items() if value.get("capability") != capability or key in active}
+            catalog = {"schemaVersion": 1, "verifiedAt": now_iso(), "fetchedAt": time.time(), "endpoint": base_url, "models": list(merged.values())}
+            write_json_atomic(RUNTIME_DIR / "anycap-catalog.json", catalog)
+            source = "live"
     capabilities = []
-    for capability_id, label in [("image", "图像"), ("video", "视频"), ("music", "音乐/音频")]:
-        result = run_anycap_cli(endpoint, [capability_id, "models"], timeout=16)
-        payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
-        models = model_items_from_payload(payload)
-        capabilities.append(
-            {
-                "id": capability_id,
-                "label": label,
-                "available": bool(result.get("available")),
-                "models": models,
-                "modelCount": len(models),
-                "message": result.get("message"),
-            }
-        )
-    discovered_video_ids = {
-        item["id"]
-        for capability in capabilities
-        if capability["id"] == "video"
-        for item in capability.get("models", [])
-    }
-    merged_video_capabilities = {
-        **ANYCAP_VIDEO_CAPABILITIES,
-        **{
-            model_id: video_capability(model_id)
-            for model_id in discovered_video_ids
-            if model_id not in ANYCAP_VIDEO_CAPABILITIES
-        },
-    }
-    return {
-        **status,
-        "available": bool(status.get("installed")),
-        "capabilities": capabilities,
-        "videoCapabilities": merged_video_capabilities,
-        "message": "AnyCap 能力和模型扫描完成。",
-    }
+    maps = {"imageCapabilities": {}, "videoCapabilities": {}, "audioCapabilities": {}}
+    for capability_id, label in (("image", "图像"), ("video", "视频"), ("audio", "语音与音效"), ("music", "音乐")):
+        models = []
+        for item in catalog.get("models", []):
+            if item.get("capability") != capability_id:
+                continue
+            models.append({key: item[key] for key in ("id", "label", "description", "capability", "operations") if key in item})
+            map_key = f"{capability_id}Capabilities" if capability_id in {"image", "video"} else "audioCapabilities"
+            maps[map_key][item["id"]] = anycap_descriptor(item["id"])
+        capabilities.append({"id": capability_id, "label": label, "available": bool(models), "models": models, "modelCount": len(models)})
+    return {"provider": "anycap", "available": bool(catalog.get("models")), "installed": anycap_available(),
+            "mode": "gateway" if is_http_url(endpoint) else "cli", "catalogSource": source,
+            "verifiedAt": catalog.get("verifiedAt"), "capabilities": capabilities, **maps,
+            "message": "AnyCap 模型与参数已同步。" if source == "live" else f"使用已验证的模型目录（{catalog.get('verifiedAt', '')}），网络恢复后可刷新。"}
 
 
 def check_openai_provider(provider_id: str, body: dict) -> dict:
@@ -2682,6 +3297,177 @@ def sub2api_chat(body: dict) -> dict:
     }
 
 
+def mobile_config_payload() -> dict:
+    media_available, media_reason = queue_available()
+    video_available, video_reason = video_queue_available()
+    return {
+        "apiVersion": "2",
+        "models": {
+            "director": os.environ.get("SUB2API_STORYBOARD_MODEL", os.environ.get("SUB2API_CHAT_MODEL", "gpt-5.5")),
+            "image": os.environ.get("ANYCAP_IMAGE_MODEL", "nano-banana-2"),
+            "video": canonical_video_model(os.environ.get("ANYCAP_VIDEO_MODEL", "seedance-2-fast")),
+            "audio": os.environ.get("ANYCAP_AUDIO_MODEL", "doubao-seed-audio-1-0"),
+            "creativeVideo": os.environ.get("ANYCAP_VIDEO_EDIT_MODEL", "gemini-omni-flash-preview"),
+        },
+        "features": {
+            "mediaGeneration": media_available,
+            "videoEditing": video_available,
+            "codexMcp": bool(os.environ.get("SELF_CANVAS_MCP_TOKEN", "").strip()),
+            "downloads": True,
+            "assetSearch": True,
+        },
+        "status": {
+            "mediaQueue": {"available": media_available, "reason": media_reason},
+            "videoEditQueue": {"available": video_available, "reason": video_reason},
+        },
+    }
+
+
+def creative_target_models() -> dict[str, set[str]]:
+    models = anycap_catalog().get("models", [])
+    return {
+        field: {str(item.get("id") or "") for item in models if item.get("capability") == kind}
+        for field, kind in (("imageModel", "image"), ("videoModel", "video"))
+    }
+
+
+def creative_video_source(canvas: dict, request: dict) -> tuple[Path, dict]:
+    artifacts = canvas_artifact_records(canvas, request["sourceNodeId"])
+    if request["artifactId"]:
+        artifacts = [item for item in artifacts if item.get("id") == request["artifactId"]]
+    videos = [item for item in artifacts if item.get("type") == "video"]
+    if len(videos) != 1:
+        raise creative_runtime.CreativeError(400, "video_unavailable", "请选择当前画布中已落盘的一段视频；无法分析远程或不存在的素材")
+    target = output_target_from_artifact_id(videos[0]["id"])
+    return target, creative_runtime.inspect_video(target)
+
+
+def creative_runs_read() -> dict:
+    path = RUNTIME_DIR / "creative-runs.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError, RecursionError) as error:
+        raise creative_runtime.CreativeError(503, "run_store_unavailable", "创作请求记录不可用，请联系管理员；未调用模型") from error
+    if not isinstance(data, dict):
+        raise creative_runtime.CreativeError(503, "run_store_unavailable", "创作请求记录不可用，请联系管理员；未调用模型")
+    for run_id, entry in data.items():
+        valid = isinstance(run_id, str) and isinstance(entry, dict)
+        valid = valid and isinstance(entry.get("fingerprint"), str) and bool(re.fullmatch(r"[a-f0-9]{64}", entry["fingerprint"]))
+        valid = valid and entry.get("status") in ("running", "completed", "failed")
+        if valid and entry["status"] == "completed":
+            valid = isinstance(entry.get("result"), dict) and entry["result"].get("runId") == run_id
+        if valid and entry["status"] == "failed":
+            error = entry.get("error")
+            valid = isinstance(error, dict) and type(error.get("status")) is int and 400 <= error["status"] <= 599
+            valid = valid and isinstance(error.get("code"), str) and isinstance(error.get("message"), str)
+        if not valid:
+            # Even a null/malformed entry for a known ID must fail closed; treating
+            # it as a cache miss could call a paid model for the same request again.
+            raise creative_runtime.CreativeError(503, "run_store_unavailable", "创作请求记录不可用，请联系管理员；未调用模型")
+    return data
+
+
+def creative_runs_write(runs: dict) -> None:
+    # Keep idempotency durable. Never silently evict old/unfinished paid requests.
+    if len(runs) > 3000:
+        raise creative_runtime.CreativeError(503, "run_store_full", "创作请求记录已达容量，请管理员先归档；未发起新调用")
+    write_json_atomic(RUNTIME_DIR / "creative-runs.json", runs)
+
+
+def read_creative_body(handler: BaseHTTPRequestHandler) -> dict:
+    if handler.headers.get("Transfer-Encoding"):
+        raise creative_runtime.CreativeError(400, "invalid_request", "创作请求不支持分块上传")
+    if str(handler.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower() != "application/json":
+        raise creative_runtime.CreativeError(415, "invalid_request", "创作请求必须使用 application/json")
+    try:
+        length = int(handler.headers.get("Content-Length") or 0)
+    except (TypeError, ValueError) as error:
+        raise creative_runtime.CreativeError(400, "invalid_request", "请求长度无效") from error
+    if length <= 0:
+        raise creative_runtime.CreativeError(400, "invalid_request", "请提供创作请求 JSON")
+    if length > creative_runtime.MAX_REQUEST_BYTES:
+        raise creative_runtime.CreativeError(413, "request_too_large", "创作请求超过 512 KiB，请缩短输入正文")
+    previous_timeout = handler.connection.gettimeout()
+    try:
+        handler.connection.settimeout(15)
+        raw = handler.rfile.read(length)
+        if len(raw) != length:
+            raise creative_runtime.CreativeError(400, "invalid_request", "创作请求未完整上传")
+        body = json.loads(raw.decode("utf-8"))
+    except TimeoutError as error:
+        raise creative_runtime.CreativeError(408, "request_timeout", "创作请求上传超时，未调用模型") from error
+    except (ValueError, RecursionError) as error:
+        raise creative_runtime.CreativeError(400, "invalid_request", "创作请求不是有效的 UTF-8 JSON") from error
+    finally:
+        handler.connection.settimeout(previous_timeout)
+    if not isinstance(body, dict):
+        raise creative_runtime.CreativeError(400, "invalid_request", "创作请求必须是 JSON 对象")
+    return body
+
+
+def create_creative_run(body: dict) -> dict:
+    # Basic validation precedes replay; catalog removals must not make a paid
+    # completed request impossible to retrieve using its original request ID.
+    request = creative_runtime.validate_request(body)
+    record = read_project_record()
+    project, canvas = require_project_canvas(record, request["canvasId"])
+    scope = f"{project.get('id') or ''}:{request['canvasId']}:{request['requestId']}"
+    run_id = "creative_" + hashlib.sha256(scope.encode("utf-8")).hexdigest()[:32]
+    fingerprint = hashlib.sha256(json.dumps(request, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+    with CREATIVE_RUNS_LOCK:
+        runs = creative_runs_read()
+        cached = runs.get(run_id)
+        if cached:
+            if cached.get("fingerprint") != fingerprint:
+                raise creative_runtime.CreativeError(409, "request_id_conflict", "此 requestId 已用于不同内容，请使用新的请求 ID")
+            if cached.get("status") == "completed":
+                return copy.deepcopy(cached["result"])
+            if cached.get("status") == "failed":
+                failure = cached["error"]
+                raise creative_runtime.CreativeError(failure["status"], failure["code"], failure["message"])
+            raise creative_runtime.CreativeError(409, "request_in_progress", "该请求正在执行，或上次执行结果尚不确定；为避免重复计费不会再次调用")
+        creative_runtime.validate_request(body, creative_target_models())
+        config = creative_runtime.gateway_config(request["kind"], request["model"])
+        video = creative_video_source(canvas, request) if request["kind"] == "video-analysis" else None
+        context = {field: anycap_descriptor(request[field]) for field in ("imageModel", "videoModel") if request[field]}
+        creative_runtime.validate_target_timing(request, context)
+        system = creative_runtime.build_system_prompt(ROOT, request, context)
+        if not CREATIVE_RUN_SLOTS.acquire(blocking=False):
+            raise creative_runtime.CreativeError(429, "creative_busy", "当前已有两个创作请求在运行，请稍后手动提交")
+        entry = {"status": "running", "fingerprint": fingerprint, "savedAt": now_iso()}
+        runs[run_id] = entry
+        try:
+            creative_runs_write(runs)
+        except Exception:
+            CREATIVE_RUN_SLOTS.release()
+            raise
+    try:
+        raw = creative_runtime.gateway_request(config, system, request, video)
+        draft = creative_runtime.validate_draft(raw, request, video[1]["durationSeconds"] if video else None, context)
+        warnings = ["候选草稿尚未写入画布；请检查内容后手动导入。", "本次只生成剧本、提示词或分析，不会自动生成图片或视频。"]
+        if request["kind"] == "storyboard":
+            warnings.append("分镜当前只有文字连续性约束，尚未绑定角色/场景参考图；生成图片前请补充并核对参考素材。")
+        if video and config["protocol"] == "openai":
+            warnings.append("OpenAI 兼容视频模式要求网关支持 video_url 内联视频扩展。")
+        result = {"runId": run_id, "kind": request["kind"], "model": config["model"], "sourceRevision": record["revision"], "canvasId": request["canvasId"], "draft": draft, "skillSources": creative_runtime.SKILL_SOURCES, "warnings": warnings, **{field: request[field] for field in ("imageModel", "videoModel", "sourceNodeId", "aspectRatio")}}
+        with CREATIVE_RUNS_LOCK:
+            runs = creative_runs_read()
+            runs[run_id] = {**entry, "status": "completed", "result": result, "savedAt": now_iso()}
+            creative_runs_write(runs)
+        return result
+    except Exception as error:
+        public = error if isinstance(error, creative_runtime.CreativeError) else creative_runtime.CreativeError(500, "creative_failed", "创作服务发生异常；为避免重复计费，未自动重试")
+        with CREATIVE_RUNS_LOCK:
+            runs = creative_runs_read()
+            runs[run_id] = {**entry, "status": "failed", "error": {"status": public.status, "code": public.code, "message": str(public)}, "savedAt": now_iso()}
+            creative_runs_write(runs)
+        raise public from error
+    finally:
+        CREATIVE_RUN_SLOTS.release()
+
+
 class SelfCanvasHandler(BaseHTTPRequestHandler):
     server_version = "SelfCanvasBridge/0.1"
 
@@ -2730,6 +3516,26 @@ class SelfCanvasHandler(BaseHTTPRequestHandler):
                     "outputDir": str(output_dir()),
                 },
             )
+            return
+        if path == "/api/auth/me":
+            try:
+                send_json(self, 200, {"user": mobile_current_user(self)}, {"Cache-Control": "no-store"})
+            except UploadError as error:
+                send_error_json(self, error.status, str(error))
+            return
+        if path == "/api/mobile/config":
+            try:
+                require_v2_api_token(self)
+                send_json(self, 200, mobile_config_payload())
+            except UploadError as error:
+                send_error_json(self, error.status, str(error))
+            return
+        if path == "/api/v2/creative/capabilities":
+            try:
+                require_v2_api_token(self)
+                send_json(self, 200, creative_runtime.capabilities(), {"Cache-Control": "no-store"})
+            except UploadError as error:
+                send_error_json(self, error.status, str(error))
             return
         if path == "/api/config":
             available, reason = queue_available()
@@ -2815,6 +3621,15 @@ class SelfCanvasHandler(BaseHTTPRequestHandler):
             except Exception as error:
                 send_error_json(self, 503, str(error))
             return
+        if path == "/api/mobile/jobs":
+            try:
+                require_v2_api_token(self)
+                send_json(self, 200, list_all_jobs())
+            except UploadError as error:
+                send_error_json(self, error.status, str(error))
+            except Exception as error:
+                send_error_json(self, 503, str(error))
+            return
         if path.startswith("/api/generation/jobs/"):
             job_id = path.rsplit("/", 1)[-1]
             try:
@@ -2831,6 +3646,13 @@ class SelfCanvasHandler(BaseHTTPRequestHandler):
         if path == "/api/files":
             send_json(self, 200, list_output_files())
             return
+        if path == "/api/mobile/artifacts":
+            try:
+                require_v2_api_token(self)
+                send_json(self, 200, list_output_files())
+            except UploadError as error:
+                send_error_json(self, error.status, str(error))
+            return
         if path.startswith("/api/files/download/"):
             self.serve_artifact_download(unquote(path.rsplit("/", 1)[-1]))
             return
@@ -2845,10 +3667,43 @@ class SelfCanvasHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
+        if path == "/api/auth/login":
+            try:
+                send_json(self, 200, mobile_login(read_json_body(self)), {"Cache-Control": "no-store"})
+            except UploadError as error:
+                send_error_json(self, error.status, str(error))
+            except Exception as error:
+                send_error_json(self, 500, f"登录服务不可用：{error}")
+            return
+        if path == "/api/auth/refresh":
+            try:
+                send_json(self, 200, mobile_refresh(read_json_body(self)), {"Cache-Control": "no-store"})
+            except UploadError as error:
+                send_error_json(self, error.status, str(error))
+            except Exception as error:
+                send_error_json(self, 500, f"登录刷新失败：{error}")
+            return
+        if path == "/api/auth/logout":
+            try:
+                send_json(self, 200, mobile_logout(self, read_json_body(self)), {"Cache-Control": "no-store"})
+            except UploadError as error:
+                send_error_json(self, error.status, str(error))
+            return
         try:
             require_write_access(self)
         except UploadError as error:
             send_error_json(self, error.status, str(error))
+            return
+        if path == "/api/v2/creative/runs":
+            try:
+                require_v2_api_token(self)
+                send_json(self, 200, create_creative_run(read_creative_body(self)), {"Cache-Control": "no-store"})
+            except creative_runtime.CreativeError as error:
+                send_json(self, error.status, {"error": str(error), "code": error.code}, {"Cache-Control": "no-store"})
+            except UploadError as error:
+                send_error_json(self, error.status, str(error))
+            except Exception:
+                send_error_json(self, 500, "创作服务暂不可用；请检查服务端日志，未自动重试")
             return
         if path == "/api/exports":
             try:

@@ -62,6 +62,7 @@ import { browserApiFetch } from './services/browserSession';
 import { COMPLETION_NOTICE_EVENT, type CompletionNoticeDetail } from './services/completionNotifier';
 import { classifyMediaFile, imageFilesFromClipboard, mediaFileAccept, uploadMediaFile } from './services/mediaImportClient';
 import { projectRepository } from './services/projectRepository';
+import { canvasShortcutBlocked, saveCanvasFeedback } from './services/canvasInteractionPolicy';
 import { useCanvasStore, type NodeAlignment } from './store/canvasStore';
 import { useSettingsStore } from './store/settingsStore';
 import type { CanvasGroup, ImportedMedia, ImportedMediaType, NodeKind, NodeOutput, StudioEdge, StudioNode } from './types';
@@ -262,7 +263,7 @@ function isComposerProtectedTarget(target: EventTarget | null) {
   if (!(target instanceof Element)) return false;
   return Boolean(
     target.closest(
-      '.left-rail, .add-panel-wrap, .add-node-menu, .quick-panel, .studio-node, .generation-composer, .mention-popover, .model-picker-popover, .connection-create-menu, .reference-group-overlay, .canvas-group-overlay, .canvas-group-toolbar, .group-color-popover, .react-flow__edge, .group-connection-layer',
+      '[role="dialog"], .floating-panel, .creative-studio-backdrop, .top-bar, .left-rail, .add-panel-wrap, .add-node-menu, .quick-panel, .studio-node, .generation-composer, .mention-popover, .model-picker-popover, .connection-create-menu, .reference-group-overlay, .canvas-group-overlay, .canvas-group-toolbar, .group-color-popover, .react-flow__edge, .group-connection-layer',
     ),
   );
 }
@@ -547,7 +548,7 @@ function CanvasWorkspace() {
     const refreshSharedProject = () => {
       if (document.visibilityState === 'visible') void hydrateProjectFromServer();
     };
-    const flushProject = () => saveNow();
+    const flushProject = () => { void saveNow().catch(() => undefined); };
     window.addEventListener('focus', refreshSharedProject);
     document.addEventListener('visibilitychange', refreshSharedProject);
     window.addEventListener('pagehide', flushProject);
@@ -1149,13 +1150,19 @@ function CanvasWorkspace() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (isEditableTarget(event.target)) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (canvasShortcutBlocked({
+        defaultPrevented: event.defaultPrevented,
+        composing: event.isComposing,
+        interactiveTarget: isEditableTarget(event.target) || Boolean(target?.closest('button, a, video, audio, summary, [role="dialog"], [role="menu"], .generation-composer, .floating-panel, .quick-panel')),
+        overlayOpen: Boolean(activeRailPanel || quickPanelOpen || addPanelOpen || document.querySelector('[role="dialog"][aria-modal="true"]')),
+        textSelected: Boolean(window.getSelection()?.toString()),
+      })) return;
       const key = event.key.toLowerCase();
       const primaryModifier = event.metaKey || event.ctrlKey;
       if (primaryModifier && key === 's') {
         event.preventDefault();
-        saveNow();
-        showImportNotice('画布已保存。', 'success');
+        void saveCanvasFeedback(saveNow, () => projectRepository.getSyncStatus()).then(({ message, tone }) => showImportNotice(message, tone));
         return;
       }
       if (primaryModifier && (key === '+' || key === '=')) {
@@ -1213,6 +1220,9 @@ function CanvasWorkspace() {
       window.removeEventListener('keyup', handleKeyUp);
     };
   }, [
+    activeRailPanel,
+    quickPanelOpen,
+    addPanelOpen,
     fitCanvas,
     onNodesChange,
     removeEdge,
@@ -1342,6 +1352,7 @@ function CanvasWorkspace() {
           panOnDrag={false}
           panActivationKeyCode="Space"
           selectionOnDrag
+          deleteKeyCode={null}
           selectionMode={SelectionMode.Partial}
           selectionKeyCode={null}
           connectionMode={ConnectionMode.Loose}

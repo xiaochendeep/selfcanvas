@@ -1,0 +1,9 @@
+[Unit]
+Description=Bounded swap for private application services
+
+[Swap]
+What=/var/lib/selfcanvas/swapfile
+Priority=-2
+
+[Install]
+WantedBy=swap.target

@@ -73,6 +73,9 @@ class ServerContractTest(unittest.TestCase):
                 "SELF_CANVAS_STORAGE_ROOT": str(self.storage_root),
                 "SELF_CANVAS_ARTIFACT_SECRET": "unit-test-artifact-secret",
                 "SELF_CANVAS_API_TOKEN": "unit-test-api-token",
+                "SELF_CANVAS_MOBILE_USERNAME": "internal",
+                "SELF_CANVAS_MOBILE_PASSWORD": "unit-test-mobile-password",
+                "SELF_CANVAS_MOBILE_AUTH_SECRET": "unit-test-mobile-auth-secret",
             },
         )
         self.env.start()
@@ -81,6 +84,7 @@ class ServerContractTest(unittest.TestCase):
             mock.patch.object(server, "IDEMPOTENCY_PATH", self.runtime / "idempotency.json"),
             mock.patch.object(server, "MANAGED_JOBS_PATH", self.runtime / "managed-jobs.json"),
             mock.patch.object(server, "ARTIFACT_SECRET_PATH", self.runtime / "artifact-secret"),
+            mock.patch.object(server, "MOBILE_SESSIONS_PATH", self.runtime / "mobile-sessions.json"),
             mock.patch.object(server, "STORAGE_CONFIG_PATH", self.runtime / "storage.json"),
         ]
         for patcher in self.path_patches:
@@ -169,6 +173,66 @@ class ServerContractTest(unittest.TestCase):
             return response.status, response.read()
         finally:
             connection.close()
+
+    def get_json_with_headers(self, base_url: str, path: str, headers: dict[str, str]) -> tuple[int, dict]:
+        request = Request(base_url + path, headers=headers)
+        try:
+            response = urlopen(request, timeout=3)
+        except HTTPError as error:
+            return error.code, json.loads(error.read().decode("utf-8"))
+        with response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+
+    def test_mobile_login_refresh_and_logout_protect_v2_api(self) -> None:
+        self.seed_project(revision=4)
+        with self.http_server() as base_url:
+            status, login = self.request_json_with_headers(
+                base_url,
+                "/api/auth/login",
+                {"username": "internal", "password": "unit-test-mobile-password"},
+                {},
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(login["user"]["username"], "internal")
+            self.assertTrue(login["accessToken"].startswith("scm1."))
+
+            access_headers = {"Authorization": f"Bearer {login['accessToken']}"}
+            canvas_status, canvases = self.get_json_with_headers(base_url, "/api/v2/canvases", access_headers)
+            self.assertEqual(canvas_status, 200)
+            self.assertEqual(canvases["revision"], 4)
+
+            refresh_status, refreshed = self.request_json_with_headers(
+                base_url,
+                "/api/auth/refresh",
+                {"refreshToken": login["refreshToken"]},
+                {},
+            )
+            self.assertEqual(refresh_status, 200)
+            self.assertNotEqual(refreshed["refreshToken"], login["refreshToken"])
+
+            replay_status, _ = self.request_json_with_headers(
+                base_url,
+                "/api/auth/refresh",
+                {"refreshToken": login["refreshToken"]},
+                {},
+            )
+            self.assertEqual(replay_status, 401)
+
+            logout_status, logout = self.request_json_with_headers(
+                base_url,
+                "/api/auth/logout",
+                {"refreshToken": refreshed["refreshToken"]},
+                {"Authorization": f"Bearer {refreshed['accessToken']}"},
+            )
+            self.assertEqual(logout_status, 200)
+            self.assertTrue(logout["ok"])
+
+            after_logout, _ = self.get_json_with_headers(
+                base_url,
+                "/api/v2/canvases",
+                {"Authorization": f"Bearer {refreshed['accessToken']}"},
+            )
+            self.assertEqual(after_logout, 401)
 
     def test_artifact_id_is_signed_tamper_resistant_and_public_record_has_no_path(self) -> None:
         target = self.make_file("uploads/2026-07-13/茶铺 场景.png", b"fake-png")
@@ -277,6 +341,250 @@ class ServerContractTest(unittest.TestCase):
 
         record = server.read_project_record()
         self.assertEqual(record["project"]["canvases"][0]["name"], "新版画布")
+
+    def test_bind_references_resolves_canvas_nodes_creates_bound_mentions_and_edges(self) -> None:
+        project = sample_project()
+        nodes = project["canvases"][0]["nodes"]
+        nodes.extend(
+            [
+                {
+                    "id": "source_image_one",
+                    "type": "studioNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "kind": "image",
+                        "title": "沈听澜",
+                        "prompt": "",
+                        "outputs": {"imageUrl": "/output/characters/shen-one.png"},
+                    },
+                },
+                {
+                    "id": "source_image_two",
+                    "type": "studioNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "kind": "image",
+                        "title": "沈听澜",
+                        "prompt": "",
+                        "outputs": {"imageUrl": "/output/characters/shen-two.png"},
+                    },
+                },
+                {
+                    "id": "source_text",
+                    "type": "studioNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "kind": "text",
+                        "title": "镜头脚本😀",
+                        "prompt": "",
+                        "outputs": {"text": "她在冷白灯下回头。"},
+                    },
+                },
+                {
+                    "id": "target_video",
+                    "type": "studioNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "kind": "video",
+                        "title": "7-01-1",
+                        "prompt": "冷色走廊🎬",
+                        "outputs": {},
+                        "references": [],
+                    },
+                },
+            ]
+        )
+        server.write_json_atomic(
+            server.PROJECT_STATE_PATH,
+            {
+                "schemaVersion": 1,
+                "revision": 3,
+                "savedAt": "2026-07-13T00:00:00+00:00",
+                "project": project,
+            },
+        )
+        body = {
+            "baseRevision": 3,
+            "requestId": "bind-references-001",
+            "operations": [
+                {
+                    "type": "bind_references",
+                    "targetNodeId": "target_video",
+                    "sourceNodeIds": ["source_image_one", "source_image_two", "source_text"],
+                }
+            ],
+        }
+
+        with self.http_server() as base_url:
+            status, result = self.request_json(base_url, "/api/v2/canvases/canvas_main/operations", body)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(result["revision"], 4)
+        canvas = server.read_project_record()["project"]["canvases"][0]
+        target = next(node for node in canvas["nodes"] if node["id"] == "target_video")
+        references = target["data"]["references"]
+        self.assertEqual([reference["outputType"] for reference in references], ["image", "image", "text"])
+        self.assertEqual([reference["source"] for reference in references], ["canvas", "canvas", "canvas"])
+        self.assertEqual(references[2]["content"], "她在冷白灯下回头。")
+
+        prompt = target["data"]["prompt"]
+        mentions = target["data"]["referenceMentions"]
+        self.assertEqual(len(mentions), 3)
+        self.assertEqual(len({mention["text"] for mention in mentions}), 3)
+        self.assertEqual(
+            [mention["referenceKey"] for mention in mentions],
+            [
+                "canvas:solo:source_image_one",
+                "canvas:solo:source_image_two",
+                "canvas:solo:source_text",
+            ],
+        )
+        self.assertTrue(mentions[0]["text"].startswith("@沈听澜"))
+        self.assertIn("source_image_two", mentions[1]["text"])
+        for mention in mentions:
+            self.assertEqual(server.utf16_slice(prompt, mention["start"], mention["end"]), mention["text"])
+        self.assertGreater(mentions[0]["start"], len("冷色走廊"))
+
+        node_edges = {(edge["source"], edge["target"]) for edge in canvas["edges"]}
+        self.assertEqual(
+            node_edges,
+            {
+                ("source_image_one", "target_video"),
+                ("source_image_two", "target_video"),
+                ("source_text", "target_video"),
+            },
+        )
+
+        second_body = {**body, "baseRevision": 4, "requestId": "bind-references-002"}
+        with self.http_server() as base_url:
+            second_status, _ = self.request_json(
+                base_url, "/api/v2/canvases/canvas_main/operations", second_body
+            )
+        self.assertEqual(second_status, 200)
+        updated_canvas = server.read_project_record()["project"]["canvases"][0]
+        updated_target = next(node for node in updated_canvas["nodes"] if node["id"] == "target_video")
+        self.assertEqual(updated_target["data"]["prompt"], prompt)
+        self.assertEqual(len(updated_target["data"]["references"]), 3)
+        self.assertEqual(len(updated_target["data"]["referenceMentions"]), 3)
+        self.assertEqual(len(updated_canvas["edges"]), 3)
+
+    def test_bind_references_uses_asset_filename_when_imported_node_title_is_generic(self) -> None:
+        project = sample_project()
+        project["canvases"][0]["nodes"].append(
+            {
+                "id": "target_video",
+                "type": "studioNode",
+                "position": {"x": 0, "y": 0},
+                "data": {"kind": "video", "title": "镜头", "prompt": "", "outputs": {}},
+            }
+        )
+        server.write_json_atomic(
+            server.PROJECT_STATE_PATH,
+            {
+                "schemaVersion": 1,
+                "revision": 2,
+                "savedAt": "2026-07-13T00:00:00+00:00",
+                "project": project,
+            },
+        )
+
+        result = server.apply_canvas_operations(
+            "canvas_main",
+            {
+                "baseRevision": 2,
+                "requestId": "bind-filename-001",
+                "operations": [
+                    {
+                        "type": "bind_references",
+                        "targetNodeId": "target_video",
+                        "sourceNodeIds": ["node_image"],
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(result["revision"], 3)
+        target = next(
+            node
+            for node in server.read_project_record()["project"]["canvases"][0]["nodes"]
+            if node["id"] == "target_video"
+        )
+        self.assertEqual(target["data"]["references"][0]["title"], "茶铺 场景.png")
+        self.assertEqual(target["data"]["referenceMentions"][0]["text"], "@茶铺 场景.png")
+
+    def test_bind_references_can_skip_mentions_and_edges_and_rejects_unsafe_fields(self) -> None:
+        project = sample_project()
+        project["canvases"][0]["nodes"].append(
+            {
+                "id": "target_video",
+                "type": "studioNode",
+                "position": {"x": 0, "y": 0},
+                "data": {"kind": "video", "title": "目标", "prompt": "原提示词", "outputs": {}},
+            }
+        )
+        server.write_json_atomic(
+            server.PROJECT_STATE_PATH,
+            {
+                "schemaVersion": 1,
+                "revision": 8,
+                "savedAt": "2026-07-13T00:00:00+00:00",
+                "project": project,
+            },
+        )
+
+        with self.http_server() as base_url:
+            status, _ = self.request_json(
+                base_url,
+                "/api/v2/canvases/canvas_main/operations",
+                {
+                    "baseRevision": 8,
+                    "requestId": "bind-no-mention-001",
+                    "operations": [
+                        {
+                            "type": "bind_references",
+                            "targetNodeId": "target_video",
+                            "sourceNodeIds": ["node_image"],
+                            "ensureEdges": False,
+                            "appendMentions": False,
+                        }
+                    ],
+                },
+            )
+        self.assertEqual(status, 200)
+        canvas = server.read_project_record()["project"]["canvases"][0]
+        target = next(node for node in canvas["nodes"] if node["id"] == "target_video")
+        self.assertEqual(target["data"]["prompt"], "原提示词")
+        self.assertNotIn("referenceMentions", target["data"])
+        self.assertEqual([reference["nodeId"] for reference in target["data"]["references"]], ["node_image"])
+        self.assertEqual(canvas["edges"], [])
+
+        for index, unsafe_field in enumerate(
+            [
+                {"url": "https://example.test/not-accepted.png"},
+                {"path": "/Users/example/not-accepted.png"},
+            ],
+            start=1,
+        ):
+            with self.http_server() as base_url:
+                unsafe_status, unsafe = self.request_json(
+                    base_url,
+                    "/api/v2/canvases/canvas_main/operations",
+                    {
+                        "baseRevision": 9,
+                        "requestId": f"bind-unsafe-field-{index:02d}",
+                        "operations": [
+                            {
+                                "type": "bind_references",
+                                "targetNodeId": "target_video",
+                                "sourceNodeIds": ["node_image"],
+                                **unsafe_field,
+                            }
+                        ],
+                    },
+                )
+            self.assertEqual(unsafe_status, 400)
+            self.assertIn("不支持的字段", unsafe["error"])
+        self.assertEqual(server.read_project_record()["revision"], 9)
 
     def test_v2_canvas_and_artifact_results_never_expose_absolute_paths(self) -> None:
         self.seed_project(revision=2)

@@ -1,0 +1,80 @@
+# Build from the repository root with a locally prebuilt dist/ directory:
+# docker build --platform linux/amd64 -f deploy/aliyun/Dockerfile.selfcanvas .
+# The adjacent Dockerfile.selfcanvas.dockerignore must retain dist/ and exclude
+# .env*, .runtime/, output/, node_modules/ and all unrelated local files.
+FROM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
+
+WORKDIR /app
+
+ENV NODE_ENV=production \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    SELF_CANVAS_HOST=127.0.0.1 \
+    SELF_CANVAS_PORT=8787 \
+    SELF_CANVAS_MCP_HOST=127.0.0.1 \
+    SELF_CANVAS_MCP_PORT=8790 \
+    SELF_CANVAS_STORAGE_ROOT=/app \
+    OUTPUT_DIR=/app/output \
+    ANYCAP_BIN=/usr/local/bin/anycap \
+    FFMPEG_BIN=/usr/bin/ffmpeg \
+    FFPROBE_BIN=/usr/bin/ffprobe
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 ca-certificates curl ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Keep the existing deployment pin; an upgrade is an explicit build arg.
+ARG TARGETARCH=amd64
+ARG ANYCAP_VERSION=0.3.6
+RUN set -eu; \
+    case "${TARGETARCH}" in amd64|arm64) ;; *) exit 1 ;; esac; \
+    version="${ANYCAP_VERSION#v}"; \
+    archive="anycap_${version}_linux_${TARGETARCH}.tar.gz"; \
+    release="https://github.com/anycap-ai/anycap/releases/download/v${version}"; \
+    curl -fsSL --connect-timeout 15 --max-time 180 --retry 3 "${release}/${archive}" -o "/tmp/${archive}"; \
+    curl -fsSL --connect-timeout 15 --max-time 180 --retry 3 "${release}/checksums.txt" -o /tmp/checksums.txt; \
+    awk -v archive="${archive}" '$2 == archive || $2 == "*" archive' /tmp/checksums.txt > /tmp/anycap.sha256; \
+    test "$(wc -l < /tmp/anycap.sha256)" -eq 1; \
+    (cd /tmp && sha256sum -c anycap.sha256); \
+    tar -xzf "/tmp/${archive}" -C /usr/local/bin anycap; \
+    chmod 0755 /usr/local/bin/anycap; \
+    rm -f "/tmp/${archive}" /tmp/checksums.txt /tmp/anycap.sha256; \
+    anycap --version; \
+    ffmpeg -version >/dev/null; \
+    ffprobe -version >/dev/null
+
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund \
+    && npm cache clean --force
+
+# Explicit runtime allowlist: never copy the whole checkout or local credentials.
+# server.py imports only creative_runtime plus Python standard-library modules.
+COPY server.py creative_runtime.py ./
+COPY scripts/generation-queue.mjs scripts/video-edit-queue.mjs ./scripts/
+COPY mcp/createServer.mjs mcp/http.mjs mcp/security.mjs mcp/selfCanvasClient.mjs mcp/stdio.mjs ./mcp/
+COPY workers/media-render-worker/index.mjs workers/media-render-worker/anycapCatalog.mjs workers/media-render-worker/providerRuntime.mjs workers/media-render-worker/storyboardRuntime.mjs ./workers/media-render-worker/
+COPY workers/video-edit-worker/index.mjs workers/video-edit-worker/queueContract.mjs workers/video-edit-worker/runtime.mjs ./workers/video-edit-worker/
+COPY prompts/creative/script.md prompts/creative/storyboard.md prompts/creative/video-analysis.md ./prompts/creative/
+COPY docs/anycap/catalog-2026-09-08.json ./docs/anycap/
+COPY dist/ ./dist/
+
+RUN test -s /app/dist/index.html \
+    && python3 -c "import ast, pathlib; [ast.parse(pathlib.Path(name).read_text()) for name in ('server.py', 'creative_runtime.py')]" \
+    && for file in mcp/*.mjs scripts/*.mjs workers/media-render-worker/*.mjs workers/video-edit-worker/*.mjs; do node --check "$file"; done \
+    && mkdir -p /app/.runtime /app/output /home/node/.anycap \
+    && chown node:node /app/.runtime /app/output /home/node/.anycap \
+    && chmod 0750 /app/.runtime /app/output /home/node/.anycap
+
+# Bind-mounted host directories must also belong to UID/GID 1000 before startup.
+# API and workers must share the same runtime/output mounts. Do not embed keys.
+USER node:node
+ENV HOME=/home/node
+
+# This image defaults to the API only; it never starts a paid generation worker.
+# For the MCP service override SELF_CANVAS_HEALTH_URL to its /health endpoint.
+# Disable this healthcheck for worker services when they are explicitly enabled.
+# API health may spend up to 10 seconds checking the two queues when Redis is down.
+HEALTHCHECK --interval=60s --timeout=15s --start-period=30s --retries=3 \
+    CMD python3 -c "import json, os, urllib.request; url = os.environ.get('SELF_CANVAS_HEALTH_URL', 'http://127.0.0.1:' + os.environ.get('SELF_CANVAS_PORT', '8787') + '/api/health'); response = urllib.request.build_opener(urllib.request.ProxyHandler({})).open(url, timeout=12); raise SystemExit(0 if json.load(response).get('status') == 'ok' else 1)"
+
+CMD ["python3", "server.py"]

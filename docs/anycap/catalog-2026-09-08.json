@@ -1,0 +1,4383 @@
+{
+  "schemaVersion": 1,
+  "verifiedAt": "2026-09-08",
+  "source": "https://api.anycap.ai/v1/{capability}/models/{model}/schema",
+  "models": [
+    {
+      "id": "flux-kontext-max",
+      "label": "FLUX.1 Kontext Max",
+      "capability": "image",
+      "description": "FLUX.1 Kontext Max is Black Forest Labs' high-end image generation and editing model. It produces detailed, stylistically rich images and supports iterative image-to-image refinement, making it well suited for creative and design-oriented workflows.",
+      "operations": [
+        {
+          "operation": "generate",
+          "modes": [
+            {
+              "mode": "text-to-image",
+              "description": "Generate images directly from text prompts."
+            },
+            {
+              "mode": "image-to-image",
+              "description": "Edit or transform existing images using text prompts while preserving the overall composition."
+            }
+          ]
+        }
+      ],
+      "schemas": [
+        {
+          "operation": "generate",
+          "mode": "text-to-image",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "1:1",
+                "16:9",
+                "9:16",
+                "4:3",
+                "3:4"
+              ],
+              "type": "string"
+            },
+            "format": {
+              "description": "Output image format.",
+              "enum": [
+                "png",
+                "jpg",
+                "webp"
+              ],
+              "type": "string"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "480p",
+                "540p",
+                "720p",
+                "1k"
+              ],
+              "type": "string"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "image-to-image",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "1:1",
+                "16:9",
+                "9:16",
+                "4:3",
+                "3:4"
+              ],
+              "type": "string"
+            },
+            "format": {
+              "description": "Output image format.",
+              "enum": [
+                "png",
+                "jpg",
+                "webp"
+              ],
+              "type": "string"
+            },
+            "images": {
+              "description": "Reference image(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 9,
+              "type": "array"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "480p",
+                "540p",
+                "720p",
+                "1k"
+              ],
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "gpt-image-2",
+      "label": "GPT Image 2",
+      "capability": "image",
+      "description": "GPT Image 2 is OpenAI's image generation and editing model. It produces high-fidelity images from text prompts and supports prompt-driven edits to existing images, making it suitable for creative workflows that mix generation and refinement.",
+      "operations": [
+        {
+          "operation": "generate",
+          "modes": [
+            {
+              "mode": "text-to-image",
+              "description": "Generate images directly from text prompts."
+            },
+            {
+              "mode": "image-to-image",
+              "description": "Edit existing images by describing the desired change in text."
+            }
+          ]
+        }
+      ],
+      "schemas": [
+        {
+          "operation": "generate",
+          "mode": "text-to-image",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "1:1",
+                "21:9",
+                "16:9",
+                "9:16"
+              ],
+              "type": "string"
+            },
+            "format": {
+              "description": "Output image format.",
+              "enum": [
+                "png",
+                "jpg",
+                "webp"
+              ],
+              "type": "string"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "1k",
+                "4k",
+                "2k"
+              ],
+              "type": "string"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "image-to-image",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "1:1",
+                "21:9",
+                "16:9",
+                "9:16",
+                "3:4",
+                "4:3"
+              ],
+              "type": "string"
+            },
+            "format": {
+              "description": "Output image format.",
+              "enum": [
+                "png",
+                "jpg",
+                "webp"
+              ],
+              "type": "string"
+            },
+            "images": {
+              "description": "Reference image(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 9,
+              "type": "array"
+            },
+            "move_forward": {
+              "description": "Forward movement distance for image editing.",
+              "type": "integer"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "1k",
+                "4k",
+                "2k"
+              ],
+              "type": "string"
+            },
+            "rotate_degrees": {
+              "description": "Camera rotation angle for image editing.",
+              "type": "integer"
+            },
+            "use_wide_angle": {
+              "description": "Whether to use a wide-angle camera effect.",
+              "type": "boolean"
+            },
+            "vertical_tilt": {
+              "description": "Vertical tilt angle for image editing.",
+              "type": "integer"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "nano-banana-2",
+      "label": "Nano Banana 2",
+      "capability": "image",
+      "description": "Nano Banana 2 is a high-efficiency image generation and conversational image editing model built for fast, large-scale visual creation. It combines the intelligence of the Gemini 3 series with low latency, strong instruction following, and production-oriented image quality, making it well suited for high-volume creative workflows such as marketing assets, product mockups, storyboards, infographics, and iterative visual editing. It supports conversational multimodal workflows with text and image inputs, and is positioned as the faster, more scalable counterpart to Gemini 3 Pro Image.",
+      "operations": [
+        {
+          "operation": "generate",
+          "modes": [
+            {
+              "mode": "text-to-image",
+              "description": "Generate images directly from text prompts."
+            },
+            {
+              "mode": "image-to-image",
+              "description": "Edit or transform images using prompts."
+            }
+          ]
+        }
+      ],
+      "schemas": [
+        {
+          "operation": "generate",
+          "mode": "text-to-image",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "4:3",
+                "3:4",
+                "1:1",
+                "16:9",
+                "9:16",
+                "21:9"
+              ],
+              "type": "string"
+            },
+            "format": {
+              "description": "Output image format.",
+              "enum": [
+                "png",
+                "jpg",
+                "webp"
+              ],
+              "type": "string"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "2k",
+                "4k",
+                "1k"
+              ],
+              "type": "string"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "image-to-image",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "4:3",
+                "3:4",
+                "1:1",
+                "16:9",
+                "9:16",
+                "21:9"
+              ],
+              "type": "string"
+            },
+            "format": {
+              "description": "Output image format.",
+              "enum": [
+                "png",
+                "jpg",
+                "webp"
+              ],
+              "type": "string"
+            },
+            "images": {
+              "description": "Reference image(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 9,
+              "type": "array"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "2k",
+                "4k",
+                "1k"
+              ],
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "nano-banana-lite",
+      "label": "Nano Banana 2 Lite",
+      "capability": "image",
+      "description": "Nano Banana 2 Lite is a lightweight image generation and conversational image editing model optimized for fast, cost-efficient creative iteration. It supports both text-to-image and image-to-image workflows, making it suitable for high-volume drafts, quick variants, and agent loops where speed and scalability matter more than peak visual fidelity.",
+      "operations": [
+        {
+          "operation": "generate",
+          "modes": [
+            {
+              "mode": "text-to-image",
+              "description": "Generate images directly from text prompts."
+            },
+            {
+              "mode": "image-to-image",
+              "description": "Edit or transform images using prompts."
+            }
+          ]
+        }
+      ],
+      "schemas": [
+        {
+          "operation": "generate",
+          "mode": "text-to-image",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output ratio.",
+              "enum": [
+                "1:1",
+                "4:3",
+                "16:9",
+                "3:4",
+                "21:9",
+                "9:16"
+              ],
+              "type": "string"
+            },
+            "format": {
+              "description": "Output file format.",
+              "enum": [
+                "jpg",
+                "png",
+                "webp"
+              ],
+              "type": "string"
+            },
+            "prompt": {
+              "description": "Text prompt describing the desired output.",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "1k"
+              ],
+              "type": "string"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "image-to-image",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "1:1",
+                "4:3",
+                "16:9",
+                "3:4",
+                "21:9",
+                "9:16"
+              ],
+              "type": "string"
+            },
+            "format": {
+              "description": "Output file format.",
+              "enum": [
+                "jpg",
+                "png",
+                "webp"
+              ],
+              "type": "string"
+            },
+            "prompt": {
+              "description": "Text prompt describing the desired output.",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "1k"
+              ],
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "nano-banana-pro",
+      "label": "Nano Banana Pro",
+      "capability": "image",
+      "description": "Nano Banana Pro is an advanced multimodal generative model designed for high-quality text-to-image and image-to-image creation. It delivers enhanced visual fidelity, stronger prompt alignment, and improved consistency across outputs, making it suitable for both creative production and commercial workflows.",
+      "operations": [
+        {
+          "operation": "generate",
+          "modes": [
+            {
+              "mode": "text-to-image",
+              "description": "Generate images directly from text prompts."
+            },
+            {
+              "mode": "image-to-image",
+              "description": "Edit or transform images using prompts."
+            }
+          ]
+        }
+      ],
+      "schemas": [
+        {
+          "operation": "generate",
+          "mode": "text-to-image",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "1:1",
+                "16:9",
+                "9:16",
+                "4:3",
+                "3:4"
+              ],
+              "type": "string"
+            },
+            "format": {
+              "description": "Output image format.",
+              "enum": [
+                "png",
+                "jpg",
+                "webp"
+              ],
+              "type": "string"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "1k",
+                "2k",
+                "4k"
+              ],
+              "type": "string"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "image-to-image",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "1:1",
+                "16:9",
+                "9:16",
+                "4:3",
+                "3:4"
+              ],
+              "type": "string"
+            },
+            "format": {
+              "description": "Output image format.",
+              "enum": [
+                "png",
+                "jpg",
+                "webp"
+              ],
+              "type": "string"
+            },
+            "images": {
+              "description": "Reference image(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 9,
+              "type": "array"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "1k",
+                "2k",
+                "4k"
+              ],
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "qwen-image",
+      "label": "Qwen Image",
+      "capability": "image",
+      "description": "Qwen Image is Alibaba's multimodal image generation and editing model. It supports both text-to-image generation and image-driven editing, with strong prompt adherence and good performance on Chinese and English text understanding.",
+      "operations": [
+        {
+          "operation": "generate",
+          "modes": [
+            {
+              "mode": "text-to-image",
+              "description": "Generate images directly from text prompts."
+            },
+            {
+              "mode": "image-to-image",
+              "description": "Edit existing images by describing the desired change in text."
+            }
+          ]
+        }
+      ],
+      "schemas": [
+        {
+          "operation": "generate",
+          "mode": "text-to-image",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "1:1",
+                "16:9",
+                "9:16",
+                "4:3",
+                "3:4"
+              ],
+              "type": "string"
+            },
+            "format": {
+              "description": "Output image format.",
+              "enum": [
+                "png",
+                "jpg",
+                "webp"
+              ],
+              "type": "string"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "1k"
+              ],
+              "type": "string"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "image-to-image",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "1:1",
+                "16:9",
+                "9:16",
+                "4:3",
+                "3:4"
+              ],
+              "type": "string"
+            },
+            "format": {
+              "description": "Output image format.",
+              "enum": [
+                "png",
+                "jpg",
+                "webp"
+              ],
+              "type": "string"
+            },
+            "images": {
+              "description": "Reference image(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 9,
+              "type": "array"
+            },
+            "move_forward": {
+              "description": "Forward movement distance for image editing.",
+              "type": "integer"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "1k"
+              ],
+              "type": "string"
+            },
+            "rotate_degrees": {
+              "description": "Camera rotation angle for image editing.",
+              "type": "integer"
+            },
+            "use_wide_angle": {
+              "description": "Whether to use a wide-angle camera effect.",
+              "type": "boolean"
+            },
+            "vertical_tilt": {
+              "description": "Vertical tilt angle for image editing.",
+              "type": "integer"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "seedream-4.5",
+      "label": "Seedream 4.5",
+      "capability": "image",
+      "description": "Seedream 4.5 is a reliable image editing and transformation model designed for image-to-image tasks. It provides stable visual modifications, consistent structure preservation, and efficient performance, making it suitable for everyday editing and iterative workflows.",
+      "operations": [
+        {
+          "operation": "generate",
+          "modes": [
+            {
+              "mode": "text-to-image",
+              "description": "Generate images directly from text prompts. Users can describe scenes, styles, and compositions, and the model will produce visually coherent results with reliable consistency."
+            },
+            {
+              "mode": "image-to-image",
+              "description": "Edit or transform existing images using text prompts. The model preserves the original composition while applying changes to style, lighting, color, or specific elements."
+            }
+          ]
+        }
+      ],
+      "schemas": [
+        {
+          "operation": "generate",
+          "mode": "text-to-image",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "1:1",
+                "4:3",
+                "16:9",
+                "3:4",
+                "9:16",
+                "21:9"
+              ],
+              "type": "string"
+            },
+            "format": {
+              "description": "Output image format.",
+              "enum": [
+                "png",
+                "jpg",
+                "webp"
+              ],
+              "type": "string"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "2k",
+                "4k"
+              ],
+              "type": "string"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "image-to-image",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "1:1",
+                "4:3",
+                "16:9",
+                "3:4",
+                "9:16",
+                "21:9"
+              ],
+              "type": "string"
+            },
+            "format": {
+              "description": "Output image format.",
+              "enum": [
+                "png",
+                "jpg",
+                "webp"
+              ],
+              "type": "string"
+            },
+            "images": {
+              "description": "Reference image(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 9,
+              "type": "array"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "2k",
+                "4k"
+              ],
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "seedream-5",
+      "label": "Seedream 5",
+      "capability": "image",
+      "description": "Seedream 5 is a high-quality image editing and transformation model optimized for image-to-image tasks. It enables precise visual modifications, style transfer, and content refinement while preserving the original structure and composition.\n\nKey Capabilities:\n\nImage-to-Image transformation with strong structural consistency\nHigh-fidelity detail enhancement and refinement\nStyle transfer and visual reinterpretation\nControlled editing of subjects, backgrounds, and attributes\nSuitable for iterative creative workflows",
+      "operations": [
+        {
+          "operation": "generate",
+          "modes": [
+            {
+              "mode": "text-to-image",
+              "description": "Generate images directly from text prompts. Users can describe scenes, characters, styles, and compositions, and the model will synthesize high-quality visuals accordingly."
+            },
+            {
+              "mode": "image-to-image",
+              "description": "Edit or transform existing images using text prompts. The model preserves the core composition while applying changes to style, details, lighting, or specific elements within the image."
+            }
+          ]
+        }
+      ],
+      "schemas": [
+        {
+          "operation": "generate",
+          "mode": "text-to-image",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "1:1",
+                "4:3",
+                "16:9",
+                "3:4",
+                "9:16",
+                "21:9"
+              ],
+              "type": "string"
+            },
+            "format": {
+              "description": "Output image format.",
+              "enum": [
+                "png",
+                "jpg",
+                "webp"
+              ],
+              "type": "string"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "2k",
+                "4k"
+              ],
+              "type": "string"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "image-to-image",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "1:1",
+                "4:3",
+                "16:9",
+                "3:4",
+                "9:16",
+                "21:9"
+              ],
+              "type": "string"
+            },
+            "format": {
+              "description": "Output image format.",
+              "enum": [
+                "png",
+                "jpg",
+                "webp"
+              ],
+              "type": "string"
+            },
+            "images": {
+              "description": "Reference image(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 9,
+              "type": "array"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "2k",
+                "4k"
+              ],
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "gemini-omni-flash-preview",
+      "label": "Gemini Omni Flash Preview",
+      "capability": "video",
+      "description": "Gemini Omni Flash Preview is a multimodal Gemini model for video editing. It edits or refines an input video with natural language instructions, preserving the original footage while applying the requested changes.",
+      "operations": [
+        {
+          "operation": "generate",
+          "modes": [
+            {
+              "mode": "edit-video",
+              "description": "Edit or refine an input video with natural language instructions. Provide the source video and describe the desired changes in the prompt."
+            }
+          ]
+        }
+      ],
+      "schemas": [
+        {
+          "operation": "generate",
+          "mode": "edit-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output video aspect ratio.",
+              "enum": [
+                "16:9",
+                "9:16"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Output video duration in seconds.",
+              "maximum": 10,
+              "minimum": 3,
+              "type": "integer"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "images": {
+              "description": "Reference image(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 9,
+              "type": "array"
+            },
+            "prompt": {
+              "description": "Natural language editing instruction for the input video.",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output video resolution.",
+              "enum": [
+                "720p"
+              ],
+              "type": "string"
+            },
+            "videos": {
+              "description": "Reference video(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 3,
+              "type": "array"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "hailuo-2.3",
+      "label": "Hailuo 2.3",
+      "capability": "video",
+      "description": "Hailuo 2.3 is MiniMax's video generation model. It produces fluid motion and cinematic transitions from both text prompts and reference images, suitable for short narrative clips and visual storytelling.",
+      "operations": [
+        {
+          "operation": "generate",
+          "modes": [
+            {
+              "mode": "text-to-video",
+              "description": "Generate videos directly from text prompts."
+            },
+            {
+              "mode": "image-to-video",
+              "description": "Animate a reference image into a short video clip."
+            }
+          ]
+        }
+      ],
+      "schemas": [
+        {
+          "operation": "generate",
+          "mode": "text-to-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "16:9",
+                "9:16"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Video duration in seconds.",
+              "enum": [
+                10
+              ],
+              "type": "integer"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output frames per second.",
+              "type": "integer"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "1080p"
+              ],
+              "type": "string"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "image-to-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "16:9",
+                "9:16"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Video duration in seconds.",
+              "enum": [
+                10
+              ],
+              "type": "integer"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output frames per second.",
+              "type": "integer"
+            },
+            "images": {
+              "description": "Reference image(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 9,
+              "type": "array"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "1080p"
+              ],
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "kling-3-motion-control",
+      "label": "Kling 3.0 Motion Control",
+      "capability": "video",
+      "description": "Kling 3.0 Motion Control transfers motion from a reference video to a character supplied in a reference image.",
+      "operations": [
+        {
+          "operation": "generate",
+          "modes": [
+            {
+              "mode": "motion-control",
+              "description": "Animate one reference character image with motion from one reference video."
+            }
+          ]
+        }
+      ],
+      "schemas": [
+        {
+          "operation": "generate",
+          "mode": "motion-control",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "type": "string"
+            },
+            "duration": {
+              "description": "Video duration in seconds.",
+              "type": "integer"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output frames per second.",
+              "type": "integer"
+            },
+            "images": {
+              "description": "Reference image(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 1,
+              "minItems": 1,
+              "type": "array"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "type": "string"
+            },
+            "videos": {
+              "description": "Reference video(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 1,
+              "minItems": 1,
+              "type": "array"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "kling-3.0",
+      "label": "Kling 3.0",
+      "capability": "video",
+      "description": "Kling 3.0 is a multimodal video generation model that converts static images into dynamic video sequences. It enables realistic motion synthesis, cinematic transitions, and controllable animation based on visual and textual inputs.",
+      "operations": [
+        {
+          "operation": "generate",
+          "modes": [
+            {
+              "mode": "text-to-video",
+              "description": "Generate videos directly from text prompts. Users can describe scenes, actions, camera movements, and styles, and the model will synthesize a complete video sequence with temporal continuity."
+            },
+            {
+              "mode": "image-to-video",
+              "description": "Generate a video sequence from a single image or multiple reference images. The model animates the scene by introducing motion, camera dynamics, and temporal progression while preserving the original visual structure."
+            },
+            {
+              "mode": "first-last-frame-to-video",
+              "description": "Generate a video transition between named first and last frame images."
+            },
+            {
+              "mode": "multi-shot-video",
+              "description": "Generate a multi-shot video from shot-level prompts and durations, optionally guided by multiple reference images."
+            }
+          ]
+        }
+      ],
+      "schemas": [
+        {
+          "operation": "generate",
+          "mode": "text-to-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "16:9",
+                "9:16",
+                "1:1"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Video duration in seconds.",
+              "enum": [
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15
+              ],
+              "type": "integer"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output frames per second.",
+              "type": "integer"
+            },
+            "generate_audio": {
+              "description": "Whether to generate audio with the video.",
+              "type": "boolean"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "720p",
+                "1080p",
+                "4k"
+              ],
+              "type": "string"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "image-to-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "16:9",
+                "9:16",
+                "1:1"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Video duration in seconds.",
+              "enum": [
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15
+              ],
+              "type": "integer"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output frames per second.",
+              "type": "integer"
+            },
+            "generate_audio": {
+              "description": "Whether to generate audio with the video.",
+              "type": "boolean"
+            },
+            "images": {
+              "description": "Reference image(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 9,
+              "type": "array"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "720p",
+                "1080p",
+                "4k"
+              ],
+              "type": "string"
+            },
+            "videos": {
+              "description": "Reference video(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 3,
+              "type": "array"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "first-last-frame-to-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "16:9",
+                "9:16",
+                "1:1"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Video duration in seconds.",
+              "enum": [
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15
+              ],
+              "type": "integer"
+            },
+            "first_frame": {
+              "description": "First-frame image. Pass a local file path or http(s) URL; AnyCap uploads files automatically.",
+              "format": "file-or-url",
+              "type": "string"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output frames per second.",
+              "type": "integer"
+            },
+            "generate_audio": {
+              "description": "Whether to generate audio with the video.",
+              "type": "boolean"
+            },
+            "last_frame": {
+              "description": "Last-frame image. Pass a local file path or http(s) URL; AnyCap uploads files automatically.",
+              "format": "file-or-url",
+              "type": "string"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "720p",
+                "1080p",
+                "4k"
+              ],
+              "type": "string"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "multi-shot-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "16:9",
+                "9:16",
+                "1:1"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Total output duration in seconds. When provided, it must equal the sum of all shot durations. If omitted, NexusHub derives it from the shots.",
+              "maximum": 15,
+              "minimum": 3,
+              "type": "integer"
+            },
+            "first_frame": {
+              "description": "Optional first-frame image for Kling 3 multi-shot. Pass a local file path or http(s) URL; AnyCap uploads local files automatically.",
+              "format": "file-or-url",
+              "type": "string"
+            },
+            "format": {
+              "description": "Output file format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "generate_audio": {
+              "description": "Whether Kling 3 should generate synchronized audio with the video.",
+              "type": "boolean"
+            },
+            "last_frame": {
+              "description": "Optional last-frame image for Kling 3 multi-shot. Requires first_frame. Pass a local file path or http(s) URL; AnyCap uploads local files automatically.",
+              "format": "file-or-url",
+              "type": "string"
+            },
+            "multi_shot_clips": {
+              "description": "Ordered storyboard shots. Shot durations must add up to the requested total duration. Kling 3 uses optional whole-video first and last frames and does not accept per-shot reference images.",
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "duration": {
+                    "description": "Duration of this shot in seconds.",
+                    "maximum": 15,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "index": {
+                    "description": "Zero-based shot index. Indices must be unique and sequential.",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "prompt": {
+                    "description": "Prompt describing the content, action, camera work, and visual intent of this shot.",
+                    "maxLength": 512,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "index",
+                  "prompt",
+                  "duration"
+                ],
+                "type": "object"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "prompt": {
+              "description": "Optional top-level prompt. Prompts in video_option.multi_shot_clips are authoritative for custom multi-shot generation.",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "720p",
+                "1080p"
+              ],
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "kling-3.0-omni",
+      "label": "Kling 3.0 Omni",
+      "capability": "video",
+      "description": "Kling 3.0 Omni is a multimodal Kling video model for text-to-video, image-to-video, reference-guided, and multi-shot video workflows. It supports shot-level prompts and durations for structured multi-shot generation.",
+      "operations": [
+        {
+          "operation": "generate",
+          "modes": [
+            {
+              "mode": "text-to-video",
+              "description": "Generate videos directly from text prompts."
+            },
+            {
+              "mode": "image-to-video",
+              "description": "Generate a video sequence from one or more reference images."
+            },
+            {
+              "mode": "multi-shot-video",
+              "description": "Generate a multi-shot video from shot-level prompts and durations, optionally guided by multiple reference images."
+            }
+          ]
+        }
+      ],
+      "schemas": [
+        {
+          "operation": "generate",
+          "mode": "text-to-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "16:9",
+                "9:16",
+                "1:1"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Requested output duration. For video this is in seconds; for audio or music this follows the adapter's provider-specific unit.",
+              "enum": [
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15
+              ],
+              "type": "integer"
+            },
+            "format": {
+              "description": "Output file format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output video frame rate.",
+              "type": "integer"
+            },
+            "generate_audio": {
+              "description": "Whether to generate audio with the video when the selected model supports sound.",
+              "type": "boolean"
+            },
+            "prompt": {
+              "description": "Text prompt describing the desired output.",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "720p",
+                "1080p"
+              ],
+              "type": "string"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "image-to-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "16:9",
+                "9:16",
+                "1:1"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Requested output duration. For video this is in seconds; for audio or music this follows the adapter's provider-specific unit.",
+              "enum": [
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15
+              ],
+              "type": "integer"
+            },
+            "format": {
+              "description": "Output file format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output video frame rate.",
+              "type": "integer"
+            },
+            "generate_audio": {
+              "description": "Whether to generate audio with the video when the selected model supports sound.",
+              "type": "boolean"
+            },
+            "images": {
+              "description": "Reference image(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 9,
+              "type": "array"
+            },
+            "prompt": {
+              "description": "Text prompt describing the desired output.",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "720p",
+                "1080p"
+              ],
+              "type": "string"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "multi-shot-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "16:9",
+                "9:16",
+                "1:1"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Total output duration in seconds. When provided, it must equal the sum of all shot durations. If omitted, NexusHub derives it from the shots.",
+              "maximum": 15,
+              "minimum": 3,
+              "type": "integer"
+            },
+            "generate_audio": {
+              "description": "Whether Kling 3O should generate synchronized audio with the video.",
+              "type": "boolean"
+            },
+            "multi_shot_clips": {
+              "description": "Ordered storyboard shots. Shot durations must add up to the requested total duration. Each shot may use either reference_image_resource_path or reference_image_url, but not both.",
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "duration": {
+                    "description": "Duration of this shot in seconds.",
+                    "maximum": 15,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "index": {
+                    "description": "Zero-based shot index. Indices must be unique and sequential.",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "prompt": {
+                    "description": "Prompt describing the content, action, camera work, and visual intent of this shot.",
+                    "maxLength": 512,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "reference_image_url": {
+                    "description": "Optional reference image for this shot. Pass a local file path or http(s) URL; AnyCap uploads local files automatically.",
+                    "format": "file-or-url",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "index",
+                  "prompt",
+                  "duration"
+                ],
+                "type": "object"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "prompt": {
+              "description": "Optional top-level prompt. Prompts in video_option.multi_shot_clips are authoritative for custom multi-shot generation.",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "720p",
+                "1080p"
+              ],
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "kling-o1",
+      "label": "Kling O1",
+      "capability": "video",
+      "description": "Kling O1 is an image-to-video model that animates a reference image into a coherent short video clip. It supports first/last frame conditioning and reference-based animation, making it suitable for product demos, story beats, and stylized motion design.",
+      "operations": [
+        {
+          "operation": "generate",
+          "modes": [
+            {
+              "mode": "image-to-video",
+              "description": "Animate a reference image into a short video clip with controllable motion and style."
+            }
+          ]
+        }
+      ],
+      "schemas": [
+        {
+          "operation": "generate",
+          "mode": "image-to-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "16:9",
+                "9:16",
+                "1:1"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Video duration in seconds.",
+              "enum": [
+                5,
+                6,
+                7,
+                8,
+                9,
+                10
+              ],
+              "type": "integer"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output frames per second.",
+              "type": "integer"
+            },
+            "images": {
+              "description": "Reference image(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 9,
+              "type": "array"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "minimax-h3",
+      "label": "MiniMax H3",
+      "capability": "video",
+      "description": "MiniMax H3 is a multimodal video generation model for creating short clips from text prompts or image, video, and audio references.",
+      "operations": [
+        {
+          "operation": "generate",
+          "modes": [
+            {
+              "mode": "text-to-video",
+              "description": "Generate videos directly from text prompts."
+            },
+            {
+              "mode": "image-to-video",
+              "description": "Animate a reference image into a short video clip."
+            },
+            {
+              "mode": "multi-modal-reference",
+              "description": "Generate videos from image, video, or audio references with a guiding prompt."
+            }
+          ]
+        }
+      ],
+      "schemas": [
+        {
+          "operation": "generate",
+          "mode": "text-to-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio. Text-to-video requires an explicit non-adaptive aspect ratio.",
+              "enum": [
+                "21:9",
+                "16:9",
+                "4:3",
+                "1:1",
+                "3:4",
+                "9:16"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Output video duration in seconds. MiniMax H3 supports integer values from 4 to 15 seconds.",
+              "enum": [
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15
+              ],
+              "type": "integer"
+            },
+            "prompt": {
+              "description": "Describe the visual content, motion, camera movement, style, and atmosphere of the video.",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output video resolution. NexusHub accepts lowercase values and converts them to the MiniMax format.",
+              "enum": [
+                "2k"
+              ],
+              "type": "string"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "image-to-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "3:4",
+                "21:9",
+                "9:16",
+                "16:9",
+                "4:3",
+                "1:1"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Video duration in seconds.",
+              "enum": [
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15
+              ],
+              "type": "integer"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output frames per second.",
+              "type": "integer"
+            },
+            "generate_audio": {
+              "description": "Whether to generate audio with the video.",
+              "type": "boolean"
+            },
+            "images": {
+              "description": "Reference image(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 9,
+              "type": "array"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "2k"
+              ],
+              "type": "string"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "multi-modal-reference",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio. Omit this field to let MiniMax H3 automatically use adaptive aspect ratio.",
+              "enum": [
+                "adaptive",
+                "21:9",
+                "16:9",
+                "4:3",
+                "1:1",
+                "3:4",
+                "9:16"
+              ],
+              "type": "string"
+            },
+            "audios": {
+              "description": "Reference audio(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 3,
+              "type": "array"
+            },
+            "duration": {
+              "description": "Output video duration in seconds. MiniMax H3 supports integer values from 4 to 15 seconds.",
+              "enum": [
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15
+              ],
+              "type": "integer"
+            },
+            "images": {
+              "description": "Reference image(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 9,
+              "type": "array"
+            },
+            "prompt": {
+              "description": "Describe the desired video, including the subject, action, camera movement, style, and atmosphere.",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output video resolution. NexusHub accepts lowercase values and converts them to the MiniMax format.",
+              "enum": [
+                "2k"
+              ],
+              "type": "string"
+            },
+            "videos": {
+              "description": "Reference video(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 3,
+              "type": "array"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "seedance-1.5-pro",
+      "label": "Seedance 1.5 Pro",
+      "capability": "video",
+      "description": "Seedance 1.5 Pro is a high-performance video generation model optimized for image-to-video tasks. It delivers smooth motion, strong temporal consistency, and high visual fidelity, making it suitable for professional-grade video creation and content production workflows.\n\nKey Capabilities:\n\nImage-to-Video generation with stable motion and transitions\nHigh visual quality with refined details\nStrong temporal consistency across frames\nOptimized for realistic and cinematic outputs\nReliable performance for production-level use cases",
+      "operations": [
+        {
+          "operation": "generate",
+          "modes": [
+            {
+              "mode": "text-to-video",
+              "description": "Generate video content directly from text prompts. Users can describe scenes, actions, camera movements, and styles, and the model will produce a complete video sequence with narrative flow and visual coherence."
+            },
+            {
+              "mode": "image-to-video",
+              "description": "Generate video sequences from input images. The model animates static visuals by introducing motion, camera dynamics, and scene progression while preserving the original composition and structure."
+            }
+          ]
+        }
+      ],
+      "schemas": [
+        {
+          "operation": "generate",
+          "mode": "text-to-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "16:9",
+                "3:4",
+                "21:9",
+                "4:3",
+                "1:1",
+                "9:16"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Video duration in seconds.",
+              "enum": [
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12
+              ],
+              "type": "integer"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output frames per second.",
+              "type": "integer"
+            },
+            "generate_audio": {
+              "description": "Whether to generate audio with the video.",
+              "type": "boolean"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "480p",
+                "720p"
+              ],
+              "type": "string"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "image-to-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "16:9",
+                "3:4",
+                "21:9",
+                "4:3",
+                "1:1",
+                "9:16"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Video duration in seconds.",
+              "enum": [
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12
+              ],
+              "type": "integer"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output frames per second.",
+              "type": "integer"
+            },
+            "generate_audio": {
+              "description": "Whether to generate audio with the video.",
+              "type": "boolean"
+            },
+            "images": {
+              "description": "Reference image(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 9,
+              "type": "array"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "480p",
+                "720p"
+              ],
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "seedance-2",
+      "label": "Seedance 2.0",
+      "capability": "video",
+      "description": "Seedance 2.0 is the next-generation Doubao video generation model. It delivers improved temporal consistency, sharper detail, and stronger prompt adherence over Seedance 1.5, suitable for high-quality cinematic and product video workflows.",
+      "operations": [
+        {
+          "operation": "generate",
+          "modes": [
+            {
+              "mode": "text-to-video",
+              "description": "Generate video content directly from text prompts."
+            },
+            {
+              "mode": "image-to-video",
+              "description": "Generate video sequences from one or more reference images while preserving the original composition."
+            },
+            {
+              "mode": "first-last-frame-to-video",
+              "description": "Generate a video transition between named first and last frame images."
+            },
+            {
+              "mode": "multi-modal-reference",
+              "description": "Generate videos from one or more image, video, or audio references with a guiding prompt."
+            }
+          ]
+        }
+      ],
+      "schemas": [
+        {
+          "operation": "generate",
+          "mode": "text-to-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "3:4",
+                "21:9",
+                "9:16",
+                "16:9",
+                "4:3",
+                "1:1"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Video duration in seconds.",
+              "enum": [
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15
+              ],
+              "type": "integer"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output frames per second.",
+              "type": "integer"
+            },
+            "generate_audio": {
+              "description": "Whether to generate audio with the video.",
+              "type": "boolean"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "480p",
+                "720p",
+                "1080p",
+                "4k"
+              ],
+              "type": "string"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "image-to-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "3:4",
+                "21:9",
+                "9:16",
+                "16:9",
+                "4:3",
+                "1:1"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Video duration in seconds.",
+              "enum": [
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15
+              ],
+              "type": "integer"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output frames per second.",
+              "type": "integer"
+            },
+            "generate_audio": {
+              "description": "Whether to generate audio with the video.",
+              "type": "boolean"
+            },
+            "images": {
+              "description": "Reference image(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 9,
+              "type": "array"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "480p",
+                "720p",
+                "1080p",
+                "4k"
+              ],
+              "type": "string"
+            },
+            "videos": {
+              "description": "Reference video(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 3,
+              "type": "array"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "first-last-frame-to-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "3:4",
+                "21:9",
+                "9:16",
+                "16:9",
+                "4:3",
+                "1:1"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Video duration in seconds.",
+              "enum": [
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15
+              ],
+              "type": "integer"
+            },
+            "first_frame": {
+              "description": "First-frame image. Pass a local file path or http(s) URL; AnyCap uploads files automatically.",
+              "format": "file-or-url",
+              "type": "string"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output frames per second.",
+              "type": "integer"
+            },
+            "generate_audio": {
+              "description": "Whether to generate audio with the video.",
+              "type": "boolean"
+            },
+            "last_frame": {
+              "description": "Last-frame image. Pass a local file path or http(s) URL; AnyCap uploads files automatically.",
+              "format": "file-or-url",
+              "type": "string"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "480p",
+                "720p",
+                "1080p",
+                "4k"
+              ],
+              "type": "string"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "multi-modal-reference",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "3:4",
+                "21:9",
+                "9:16",
+                "16:9",
+                "4:3",
+                "1:1"
+              ],
+              "type": "string"
+            },
+            "audios": {
+              "description": "Reference audio(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 3,
+              "type": "array"
+            },
+            "duration": {
+              "description": "Output video duration in seconds. This setting does not trim or change the duration of reference audio assets.",
+              "enum": [
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15
+              ],
+              "type": "integer"
+            },
+            "generate_audio": {
+              "description": "Whether Seedance should generate audio for the output video. This is separate from reference audio input.",
+              "type": "boolean"
+            },
+            "images": {
+              "description": "Reference image(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 9,
+              "type": "array"
+            },
+            "prompt": {
+              "description": "Prompt describing the desired video.",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "480p",
+                "720p",
+                "1080p",
+                "4k"
+              ],
+              "type": "string"
+            },
+            "videos": {
+              "description": "Reference video(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 3,
+              "type": "array"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "seedance-2-fast",
+      "label": "Seedance 2.0 Fast",
+      "capability": "video",
+      "description": "Seedance 2.0 Fast is the latency-optimized variant of Seedance 2.0. It trades some peak quality for faster turnaround, making it well suited for iterative previewing, ideation, and high-volume content production.",
+      "operations": [
+        {
+          "operation": "generate",
+          "modes": [
+            {
+              "mode": "text-to-video",
+              "description": "Generate video content directly from text prompts with faster turnaround."
+            },
+            {
+              "mode": "image-to-video",
+              "description": "Generate video sequences from one or more reference images with faster turnaround."
+            },
+            {
+              "mode": "multi-modal-reference",
+              "description": "Generate videos from one or more image, video, or audio references with faster turnaround."
+            }
+          ]
+        }
+      ],
+      "schemas": [
+        {
+          "operation": "generate",
+          "mode": "text-to-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "3:4",
+                "21:9",
+                "9:16",
+                "16:9",
+                "4:3",
+                "1:1"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Video duration in seconds.",
+              "enum": [
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15
+              ],
+              "type": "integer"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output frames per second.",
+              "type": "integer"
+            },
+            "generate_audio": {
+              "description": "Whether to generate audio with the video.",
+              "type": "boolean"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "480p",
+                "720p"
+              ],
+              "type": "string"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "image-to-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "3:4",
+                "21:9",
+                "9:16",
+                "16:9",
+                "4:3",
+                "1:1"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Video duration in seconds.",
+              "enum": [
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15
+              ],
+              "type": "integer"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output frames per second.",
+              "type": "integer"
+            },
+            "generate_audio": {
+              "description": "Whether to generate audio with the video.",
+              "type": "boolean"
+            },
+            "images": {
+              "description": "Reference image(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 9,
+              "type": "array"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "480p",
+                "720p"
+              ],
+              "type": "string"
+            },
+            "videos": {
+              "description": "Reference video(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 3,
+              "type": "array"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "multi-modal-reference",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "3:4",
+                "21:9",
+                "9:16",
+                "16:9",
+                "4:3",
+                "1:1"
+              ],
+              "type": "string"
+            },
+            "audios": {
+              "description": "Reference audio(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 3,
+              "type": "array"
+            },
+            "duration": {
+              "description": "Video duration in seconds.",
+              "enum": [
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15
+              ],
+              "type": "integer"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output frames per second.",
+              "type": "integer"
+            },
+            "generate_audio": {
+              "description": "Whether to generate audio with the video.",
+              "type": "boolean"
+            },
+            "images": {
+              "description": "Reference image(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 9,
+              "type": "array"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "480p",
+                "720p"
+              ],
+              "type": "string"
+            },
+            "videos": {
+              "description": "Reference video(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 3,
+              "type": "array"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "seedance-2-mini",
+      "label": "Seedance 2.0 Mini",
+      "capability": "video",
+      "description": "Seedance 2.0 Mini is a lightweight variant of Seedance 2.0 designed for efficient video generation and rapid iteration across text, image, frame, and multi-modal reference workflows.",
+      "operations": [
+        {
+          "operation": "generate",
+          "modes": [
+            {
+              "mode": "text-to-video",
+              "description": "Generate video content directly from text prompts with efficient turnaround."
+            },
+            {
+              "mode": "image-to-video",
+              "description": "Generate video sequences from one or more reference images."
+            },
+            {
+              "mode": "first-last-frame-to-video",
+              "description": "Generate a video transition between named first and last frame images."
+            },
+            {
+              "mode": "multi-modal-reference",
+              "description": "Generate videos from one or more image, video, or audio references with a guiding prompt."
+            }
+          ]
+        }
+      ],
+      "schemas": [
+        {
+          "operation": "generate",
+          "mode": "text-to-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "3:4",
+                "21:9",
+                "9:16",
+                "16:9",
+                "4:3",
+                "1:1"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Video duration in seconds.",
+              "enum": [
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15
+              ],
+              "type": "integer"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output frames per second.",
+              "type": "integer"
+            },
+            "generate_audio": {
+              "description": "Whether to generate audio with the video.",
+              "type": "boolean"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "480p",
+                "720p"
+              ],
+              "type": "string"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "image-to-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "3:4",
+                "21:9",
+                "9:16",
+                "16:9",
+                "4:3",
+                "1:1"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Video duration in seconds.",
+              "enum": [
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15
+              ],
+              "type": "integer"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output frames per second.",
+              "type": "integer"
+            },
+            "generate_audio": {
+              "description": "Whether to generate audio with the video.",
+              "type": "boolean"
+            },
+            "images": {
+              "description": "Reference image(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 9,
+              "type": "array"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "480p",
+                "720p"
+              ],
+              "type": "string"
+            },
+            "videos": {
+              "description": "Reference video(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 3,
+              "type": "array"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "first-last-frame-to-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "3:4",
+                "21:9",
+                "9:16",
+                "16:9",
+                "4:3",
+                "1:1"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Video duration in seconds.",
+              "enum": [
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15
+              ],
+              "type": "integer"
+            },
+            "first_frame": {
+              "description": "First-frame image. Pass a local file path or http(s) URL; AnyCap uploads files automatically.",
+              "format": "file-or-url",
+              "type": "string"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output frames per second.",
+              "type": "integer"
+            },
+            "generate_audio": {
+              "description": "Whether to generate audio with the video.",
+              "type": "boolean"
+            },
+            "last_frame": {
+              "description": "Last-frame image. Pass a local file path or http(s) URL; AnyCap uploads files automatically.",
+              "format": "file-or-url",
+              "type": "string"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "480p",
+                "720p"
+              ],
+              "type": "string"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "multi-modal-reference",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "3:4",
+                "21:9",
+                "9:16",
+                "16:9",
+                "4:3",
+                "1:1"
+              ],
+              "type": "string"
+            },
+            "audios": {
+              "description": "Reference audio(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 3,
+              "type": "array"
+            },
+            "duration": {
+              "description": "Video duration in seconds.",
+              "enum": [
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15
+              ],
+              "type": "integer"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output frames per second.",
+              "type": "integer"
+            },
+            "generate_audio": {
+              "description": "Whether to generate audio with the video.",
+              "type": "boolean"
+            },
+            "images": {
+              "description": "Reference image(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 9,
+              "type": "array"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "480p",
+                "720p"
+              ],
+              "type": "string"
+            },
+            "videos": {
+              "description": "Reference video(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 3,
+              "type": "array"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "seedance-2.5",
+      "label": "Seedance 2.5",
+      "capability": "video",
+      "description": "Seedance 2.5 is ByteDance's latest multimodal video generation model for high-quality text, image, first-and-last-frame, and reference-guided video workflows.",
+      "operations": [
+        {
+          "operation": "generate",
+          "modes": [
+            {
+              "mode": "text-to-video",
+              "description": "Generate video content directly from a text prompt."
+            },
+            {
+              "mode": "image-to-video",
+              "description": "Generate video sequences from one or more reference images."
+            },
+            {
+              "mode": "first-last-frame-to-video",
+              "description": "Generate a video transition between named first and last frame images."
+            },
+            {
+              "mode": "multi-modal-reference",
+              "description": "Generate videos from image, video, or audio references with a guiding prompt."
+            }
+          ]
+        }
+      ],
+      "schemas": [
+        {
+          "operation": "generate",
+          "mode": "text-to-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "3:4",
+                "21:9",
+                "9:16",
+                "16:9",
+                "4:3",
+                "1:1"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Video duration in seconds.",
+              "enum": [
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                16,
+                17,
+                18,
+                19,
+                20,
+                21,
+                22,
+                23,
+                24,
+                25,
+                26,
+                27,
+                28,
+                29,
+                30
+              ],
+              "type": "integer"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output frames per second.",
+              "type": "integer"
+            },
+            "generate_audio": {
+              "description": "Whether to generate audio with the video.",
+              "type": "boolean"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "480p",
+                "720p",
+                "1080p"
+              ],
+              "type": "string"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "image-to-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "3:4",
+                "21:9",
+                "9:16",
+                "16:9",
+                "4:3",
+                "1:1"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Video duration in seconds.",
+              "enum": [
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                16,
+                17,
+                18,
+                19,
+                20,
+                21,
+                22,
+                23,
+                24,
+                25,
+                26,
+                27,
+                28,
+                29,
+                30
+              ],
+              "type": "integer"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output frames per second.",
+              "type": "integer"
+            },
+            "generate_audio": {
+              "description": "Whether to generate audio with the video.",
+              "type": "boolean"
+            },
+            "images": {
+              "description": "Reference image(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 9,
+              "type": "array"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "480p",
+                "720p",
+                "1080p"
+              ],
+              "type": "string"
+            },
+            "videos": {
+              "description": "Reference video(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 3,
+              "type": "array"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "first-last-frame-to-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "3:4",
+                "21:9",
+                "9:16",
+                "16:9",
+                "4:3",
+                "1:1"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Video duration in seconds.",
+              "enum": [
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                16,
+                17,
+                18,
+                19,
+                20,
+                21,
+                22,
+                23,
+                24,
+                25,
+                26,
+                27,
+                28,
+                29,
+                30
+              ],
+              "type": "integer"
+            },
+            "first_frame": {
+              "description": "First-frame image. Pass a local file path or http(s) URL; AnyCap uploads files automatically.",
+              "format": "file-or-url",
+              "type": "string"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output frames per second.",
+              "type": "integer"
+            },
+            "generate_audio": {
+              "description": "Whether to generate audio with the video.",
+              "type": "boolean"
+            },
+            "last_frame": {
+              "description": "Last-frame image. Pass a local file path or http(s) URL; AnyCap uploads files automatically.",
+              "format": "file-or-url",
+              "type": "string"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "480p",
+                "720p",
+                "1080p"
+              ],
+              "type": "string"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "multi-modal-reference",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "3:4",
+                "21:9",
+                "9:16",
+                "16:9",
+                "4:3",
+                "1:1"
+              ],
+              "type": "string"
+            },
+            "audios": {
+              "description": "Reference audio(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 3,
+              "type": "array"
+            },
+            "duration": {
+              "description": "Output video duration in seconds. This setting does not trim or change the duration of reference audio assets.",
+              "enum": [
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                16,
+                17,
+                18,
+                19,
+                20,
+                21,
+                22,
+                23,
+                24,
+                25,
+                26,
+                27,
+                28,
+                29,
+                30
+              ],
+              "type": "integer"
+            },
+            "generate_audio": {
+              "description": "Whether Seedance should generate audio for the output video. This is separate from reference audio input.",
+              "type": "boolean"
+            },
+            "images": {
+              "description": "Reference image(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 9,
+              "type": "array"
+            },
+            "prompt": {
+              "description": "Prompt describing the desired video.",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "480p",
+                "720p",
+                "1080p"
+              ],
+              "type": "string"
+            },
+            "videos": {
+              "description": "Reference video(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 3,
+              "type": "array"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "sora-2-pro",
+      "label": "Sora 2 Pro",
+      "capability": "video",
+      "description": "Sora 2 Pro is OpenAI's high-end text-to-video model. It produces realistic, temporally coherent videos from text and image prompts, with strong scene understanding and fluid motion, suitable for cinematic, product, and narrative content.",
+      "operations": [
+        {
+          "operation": "generate",
+          "modes": [
+            {
+              "mode": "text-to-video",
+              "description": "Generate video content directly from text prompts."
+            },
+            {
+              "mode": "image-to-video",
+              "description": "Generate video sequences from a reference image."
+            }
+          ]
+        }
+      ],
+      "schemas": [
+        {
+          "operation": "generate",
+          "mode": "text-to-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "16:9",
+                "9:16"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Video duration in seconds.",
+              "enum": [
+                4,
+                8,
+                12
+              ],
+              "type": "integer"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output frames per second.",
+              "type": "integer"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "720p",
+                "1080p"
+              ],
+              "type": "string"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "image-to-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "16:9",
+                "9:16"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Video duration in seconds.",
+              "enum": [
+                4,
+                8,
+                12
+              ],
+              "type": "integer"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output frames per second.",
+              "type": "integer"
+            },
+            "images": {
+              "description": "Reference image(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 9,
+              "type": "array"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "720p",
+                "1080p"
+              ],
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "veo-3.1",
+      "label": "Veo 3.1",
+      "capability": "video",
+      "description": "Veo 3.1 is a high-end video generation model designed for text-to-video tasks. It produces cinematic-quality videos with advanced motion realism, strong temporal consistency, and detailed scene understanding, making it suitable for professional video production and storytelling.",
+      "operations": [
+        {
+          "operation": "generate",
+          "modes": [
+            {
+              "mode": "text-to-video",
+              "description": "Generate high-quality video content directly from text prompts. Users can describe scenes, actions, camera movement, and style, and the model will produce a coherent video sequence with cinematic flow."
+            },
+            {
+              "mode": "image-to-video",
+              "description": "Generate video sequences from input images. The model animates static visuals by introducing motion, camera movement, and temporal progression while maintaining the original composition and enhancing realism."
+            }
+          ]
+        }
+      ],
+      "schemas": [
+        {
+          "operation": "generate",
+          "mode": "text-to-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "9:16",
+                "16:9"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Video duration in seconds.",
+              "enum": [
+                6,
+                8
+              ],
+              "type": "integer"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output frames per second.",
+              "type": "integer"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "720p",
+                "1080p"
+              ],
+              "type": "string"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "image-to-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "9:16",
+                "16:9"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Video duration in seconds.",
+              "enum": [
+                6,
+                8
+              ],
+              "type": "integer"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output frames per second.",
+              "type": "integer"
+            },
+            "images": {
+              "description": "Reference image(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 9,
+              "type": "array"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "720p",
+                "1080p"
+              ],
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "veo-3.1-fast",
+      "label": "Veo 3.1 Fast",
+      "capability": "video",
+      "description": "Veo 3.1 Fast is the latency-optimized variant of Veo 3.1. It delivers cinematic motion quality with faster turnaround, suitable for iterative previewing and high-volume content production.",
+      "operations": [
+        {
+          "operation": "generate",
+          "modes": [
+            {
+              "mode": "text-to-video",
+              "description": "Generate video content directly from text prompts with faster turnaround."
+            },
+            {
+              "mode": "image-to-video",
+              "description": "Generate video sequences from a reference image with faster turnaround."
+            }
+          ]
+        }
+      ],
+      "schemas": [
+        {
+          "operation": "generate",
+          "mode": "text-to-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "16:9",
+                "9:16"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Video duration in seconds.",
+              "enum": [
+                4,
+                6,
+                8
+              ],
+              "type": "integer"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output frames per second.",
+              "type": "integer"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "720p",
+                "1080p"
+              ],
+              "type": "string"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "image-to-video",
+          "parameters": {
+            "aspect_ratio": {
+              "description": "Output aspect ratio.",
+              "enum": [
+                "16:9",
+                "9:16"
+              ],
+              "type": "string"
+            },
+            "duration": {
+              "description": "Video duration in seconds.",
+              "enum": [
+                4,
+                6,
+                8
+              ],
+              "type": "integer"
+            },
+            "format": {
+              "description": "Output video format.",
+              "enum": [
+                "mp4"
+              ],
+              "type": "string"
+            },
+            "fps": {
+              "description": "Output frames per second.",
+              "type": "integer"
+            },
+            "images": {
+              "description": "Reference image(s). Pass local file paths or http(s) URLs; AnyCap uploads files automatically and forwards them to the upstream provider.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 9,
+              "type": "array"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "resolution": {
+              "description": "Output resolution.",
+              "enum": [
+                "720p",
+                "1080p"
+              ],
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "doubao-seed-audio-1-0",
+      "label": "Doubao Seed Audio 1.0",
+      "capability": "audio",
+      "description": "Doubao Seed Audio 1.0 generates speech, multi-speaker dialogue, and complete audio scenes from text, audio, or image references.",
+      "operations": [
+        {
+          "operation": "generate",
+          "modes": [
+            {
+              "mode": "text-to-audio",
+              "description": "Generate speech, dialogue, or a complete audio scene from a text prompt, with optional NexusHub speaker IDs."
+            },
+            {
+              "mode": "audio-to-audio",
+              "description": "Generate audio guided by one to three reference audio inputs."
+            },
+            {
+              "mode": "image-to-audio",
+              "description": "Generate audio guided by one reference image."
+            }
+          ]
+        }
+      ],
+      "schemas": [
+        {
+          "operation": "generate",
+          "mode": "text-to-audio",
+          "parameters": {
+            "enable_subtitle": {
+              "description": "Whether to include subtitle output.",
+              "type": "boolean"
+            },
+            "format": {
+              "description": "Output audio format.",
+              "enum": [
+                "mp3",
+                "wav"
+              ],
+              "type": "string"
+            },
+            "loudness_rate": {
+              "default": 0,
+              "description": "Loudness adjustment.",
+              "maximum": 100,
+              "minimum": -50,
+              "multipleOf": 1,
+              "type": "integer"
+            },
+            "pitch_rate": {
+              "default": 0,
+              "description": "Pitch adjustment.",
+              "maximum": 12,
+              "minimum": -12,
+              "multipleOf": 1,
+              "type": "integer"
+            },
+            "prompt": {
+              "description": "Text prompt describing the desired output.",
+              "maxLength": 3000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "sample_rate": {
+              "description": "Output sample rate in Hz.",
+              "enum": [
+                8000,
+                16000,
+                24000,
+                32000,
+                44100,
+                48000
+              ],
+              "type": "integer"
+            },
+            "speaker_ids": {
+              "description": "Optional NexusHub speaker ID for text-to-audio generation. At most one speaker may be supplied.",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 1,
+              "type": "array"
+            },
+            "speech_rate": {
+              "default": 0,
+              "description": "Speech-rate adjustment.",
+              "maximum": 100,
+              "minimum": -50,
+              "multipleOf": 1,
+              "type": "integer"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "audio-to-audio",
+          "parameters": {
+            "audios": {
+              "description": "Reference audio input(s). Pass local file paths or http(s) URLs; AnyCap uploads local files before invoking NexusHub.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 3,
+              "minItems": 1,
+              "type": "array"
+            },
+            "enable_subtitle": {
+              "description": "Whether to include subtitle output.",
+              "type": "boolean"
+            },
+            "format": {
+              "description": "Output audio format.",
+              "enum": [
+                "mp3",
+                "wav"
+              ],
+              "type": "string"
+            },
+            "loudness_rate": {
+              "default": 0,
+              "description": "Loudness adjustment.",
+              "maximum": 100,
+              "minimum": -50,
+              "multipleOf": 1,
+              "type": "integer"
+            },
+            "pitch_rate": {
+              "default": 0,
+              "description": "Pitch adjustment.",
+              "maximum": 12,
+              "minimum": -12,
+              "multipleOf": 1,
+              "type": "integer"
+            },
+            "prompt": {
+              "description": "Text prompt describing the desired output.",
+              "maxLength": 3000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "sample_rate": {
+              "description": "Output sample rate in Hz.",
+              "enum": [
+                8000,
+                16000,
+                24000,
+                32000,
+                44100,
+                48000
+              ],
+              "type": "integer"
+            },
+            "speech_rate": {
+              "default": 0,
+              "description": "Speech-rate adjustment.",
+              "maximum": 100,
+              "minimum": -50,
+              "multipleOf": 1,
+              "type": "integer"
+            }
+          }
+        },
+        {
+          "operation": "generate",
+          "mode": "image-to-audio",
+          "parameters": {
+            "enable_subtitle": {
+              "description": "Whether to include subtitle output.",
+              "type": "boolean"
+            },
+            "format": {
+              "description": "Output audio format.",
+              "enum": [
+                "mp3",
+                "wav"
+              ],
+              "type": "string"
+            },
+            "images": {
+              "description": "Reference image input(s). Pass local file paths or http(s) URLs; AnyCap uploads local files before invoking NexusHub.",
+              "items": {
+                "format": "file-or-url",
+                "type": "string"
+              },
+              "maxItems": 1,
+              "minItems": 1,
+              "type": "array"
+            },
+            "loudness_rate": {
+              "default": 0,
+              "description": "Loudness adjustment.",
+              "maximum": 100,
+              "minimum": -50,
+              "multipleOf": 1,
+              "type": "integer"
+            },
+            "pitch_rate": {
+              "default": 0,
+              "description": "Pitch adjustment.",
+              "maximum": 12,
+              "minimum": -12,
+              "multipleOf": 1,
+              "type": "integer"
+            },
+            "prompt": {
+              "description": "Text prompt describing the desired output.",
+              "maxLength": 3000,
+              "minLength": 1,
+              "type": "string"
+            },
+            "sample_rate": {
+              "description": "Output sample rate in Hz.",
+              "enum": [
+                8000,
+                16000,
+                24000,
+                32000,
+                44100,
+                48000
+              ],
+              "type": "integer"
+            },
+            "speech_rate": {
+              "default": 0,
+              "description": "Speech-rate adjustment.",
+              "maximum": 100,
+              "minimum": -50,
+              "multipleOf": 1,
+              "type": "integer"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "elevanlabs-music",
+      "label": "ElevenLabs Music",
+      "capability": "music",
+      "description": "ElevenLabs Music is an advanced generative audio model that creates original music from text prompts. It enables users to generate high-quality compositions with control over style, mood, instrumentation, and structure, making it suitable for creative production and audio content workflows.",
+      "operations": [
+        {
+          "operation": "generate",
+          "modes": [
+            {
+              "mode": "text-to-music",
+              "description": "Generate original music tracks directly from text prompts. Users can describe the desired style, mood, tempo, and instruments, and the model will produce a complete audio composition. can control music duration 3-600s"
+            }
+          ]
+        }
+      ],
+      "schemas": [
+        {
+          "operation": "generate",
+          "mode": "text-to-music",
+          "parameters": {
+            "continue_at": {
+              "description": "Continuation start time in seconds.",
+              "type": "integer"
+            },
+            "continue_clip_id": {
+              "description": "Clip ID to continue from.",
+              "type": "string"
+            },
+            "custom_mode": {
+              "description": "Whether to use custom mode with tags, title, or lyrics.",
+              "type": "boolean"
+            },
+            "duration": {
+              "description": "Music duration in milliseconds.",
+              "type": "integer"
+            },
+            "lyrics": {
+              "description": "Lyrics",
+              "type": "string"
+            },
+            "make_instrumental": {
+              "description": "Whether to generate instrumental music without vocals.",
+              "type": "boolean"
+            },
+            "model_variant": {
+              "description": "Music model version.",
+              "type": "string"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "tags": {
+              "description": "Music style tags.",
+              "type": "string"
+            },
+            "title": {
+              "description": "Song title.",
+              "type": "string"
+            },
+            "vocal_gender": {
+              "description": "Preferred vocal gender.",
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "mureka-v8",
+      "label": "Mureka V8",
+      "capability": "music",
+      "description": "Mureka V8 is a generative music model focused on high-quality vocal and instrumental composition from text prompts. It supports custom lyrics and style tags, suitable for songwriting and audio content production.",
+      "operations": [
+        {
+          "operation": "generate",
+          "modes": [
+            {
+              "mode": "text-to-music",
+              "description": "Generate music tracks directly from text prompts with optional custom lyrics."
+            }
+          ]
+        }
+      ],
+      "schemas": [
+        {
+          "operation": "generate",
+          "mode": "text-to-music",
+          "parameters": {
+            "continue_at": {
+              "description": "Continuation start time in seconds.",
+              "type": "integer"
+            },
+            "continue_clip_id": {
+              "description": "Clip ID to continue from.",
+              "type": "string"
+            },
+            "custom_mode": {
+              "description": "Whether to use custom mode with tags, title, or lyrics.",
+              "type": "boolean"
+            },
+            "duration": {
+              "description": "Music duration in milliseconds.",
+              "type": "integer"
+            },
+            "lyrics": {
+              "description": "Lyrics",
+              "type": "string"
+            },
+            "make_instrumental": {
+              "description": "Whether to generate instrumental music without vocals.",
+              "type": "boolean"
+            },
+            "model_variant": {
+              "description": "Music model version.",
+              "type": "string"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "tags": {
+              "description": "Music style tags.",
+              "type": "string"
+            },
+            "title": {
+              "description": "Song title.",
+              "type": "string"
+            },
+            "vocal_gender": {
+              "description": "Preferred vocal gender.",
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "suno-v5",
+      "label": "Suno V5",
+      "capability": "music",
+      "description": "Suno V5 is a state-of-the-art generative music model that creates full-length songs and audio tracks from text prompts. It supports rich musical structure, including vocals, lyrics, instrumentation, and arrangement, enabling high-quality music production from simple descriptions.",
+      "operations": [
+        {
+          "operation": "generate",
+          "modes": [
+            {
+              "mode": "text-to-music",
+              "description": "Generate complete music tracks directly from text prompts. Users can describe themes, styles, lyrics, and mood, and the model will produce structured audio with optional vocals and instrumentation."
+            }
+          ]
+        }
+      ],
+      "schemas": [
+        {
+          "operation": "generate",
+          "mode": "text-to-music",
+          "parameters": {
+            "continue_at": {
+              "description": "Continuation start time in seconds.",
+              "type": "integer"
+            },
+            "continue_clip_id": {
+              "description": "Clip ID to continue from.",
+              "type": "string"
+            },
+            "custom_mode": {
+              "description": "Whether to use custom mode with tags, title, or lyrics.",
+              "type": "boolean"
+            },
+            "duration": {
+              "description": "Music duration in milliseconds.",
+              "type": "integer"
+            },
+            "lyrics": {
+              "description": "Lyrics",
+              "type": "string"
+            },
+            "make_instrumental": {
+              "description": "Whether to generate instrumental music without vocals.",
+              "type": "boolean"
+            },
+            "model_variant": {
+              "description": "Music model version.",
+              "type": "string"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "tags": {
+              "description": "Music style tags.",
+              "type": "string"
+            },
+            "title": {
+              "description": "Song title.",
+              "type": "string"
+            },
+            "vocal_gender": {
+              "description": "Preferred vocal gender.",
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "suno-v5.5",
+      "label": "Suno V5.5",
+      "capability": "music",
+      "description": "Suno V5.5 is the latest revision of Suno's text-to-music model, with improved musical structure, vocal quality, and prompt adherence over V5.",
+      "operations": [
+        {
+          "operation": "generate",
+          "modes": [
+            {
+              "mode": "text-to-music",
+              "description": "Generate complete music tracks directly from text prompts with vocals and arrangement."
+            }
+          ]
+        }
+      ],
+      "schemas": [
+        {
+          "operation": "generate",
+          "mode": "text-to-music",
+          "parameters": {
+            "continue_at": {
+              "description": "Continuation start time in seconds.",
+              "type": "integer"
+            },
+            "continue_clip_id": {
+              "description": "Clip ID to continue from.",
+              "type": "string"
+            },
+            "custom_mode": {
+              "description": "Whether to use custom mode with tags, title, or lyrics.",
+              "type": "boolean"
+            },
+            "duration": {
+              "description": "Music duration in milliseconds.",
+              "type": "integer"
+            },
+            "lyrics": {
+              "description": "Lyrics.",
+              "type": "string"
+            },
+            "make_instrumental": {
+              "description": "Whether to generate instrumental music without vocals.",
+              "type": "boolean"
+            },
+            "model_variant": {
+              "description": "Music model version.",
+              "type": "string"
+            },
+            "prompt": {
+              "description": "Prompt",
+              "type": "string"
+            },
+            "tags": {
+              "description": "Music style tags.",
+              "type": "string"
+            },
+            "title": {
+              "description": "Song title.",
+              "type": "string"
+            },
+            "vocal_gender": {
+              "description": "Preferred vocal gender.",
+              "type": "string"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

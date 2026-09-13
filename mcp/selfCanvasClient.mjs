@@ -81,7 +81,9 @@ export class SelfCanvasClient {
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timeoutMs = options.timeoutMs === undefined ? this.timeoutMs : Number(options.timeoutMs);
+    if (!Number.isFinite(timeoutMs) || timeoutMs < 1_000) throw new TypeError('API timeoutMs 必须至少为 1000');
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await this.fetchImpl(url, {
         method,
@@ -96,7 +98,7 @@ export class SelfCanvasClient {
       });
       const raw = await readJsonLimited(response);
       const sanitized = absolutizeControlledUrls(
-        sanitizeForMcp(raw, { baseUrl: this.baseUrl }),
+        sanitizeForMcp(raw, { baseUrl: this.baseUrl, maxStringLength: options.maxStringLength }),
         this.publicBaseUrl,
       );
       if (!response.ok) {
@@ -173,6 +175,32 @@ export class SelfCanvasClient {
       requestId: body.requestId,
       body,
     }).then(fitMcpResponse);
+  }
+
+  getCreativeCapabilities() {
+    return this.request('GET', '/api/v2/creative/capabilities').then(fitMcpResponse);
+  }
+
+  async createCreativeDraft(input) {
+    try {
+      return fitMcpResponse(await this.request('POST', '/api/v2/creative/runs', {
+        requestId: input.requestId,
+        body: input,
+        // The server permits a 180s gateway timeout; leave room for validation
+        // and journaling instead of reporting a still-running paid call failed.
+        timeoutMs: 190_000,
+        maxStringLength: 80_000,
+      }));
+    } catch (error) {
+      if (error instanceof SelfCanvasApiError && ['timeout', 'connection_error'].includes(error.code)) {
+        throw new SelfCanvasApiError('创作请求结果尚未确认，原请求可能仍在执行。重试必须复用相同 requestId 和参数，不能创建新 requestId。', {
+          status: error.status,
+          code: error.code,
+          details: { requestId: input.requestId, outcome: 'unknown', retryWithSameRequestId: true },
+        });
+      }
+      throw error;
+    }
   }
 
   getJob({ jobId }) {

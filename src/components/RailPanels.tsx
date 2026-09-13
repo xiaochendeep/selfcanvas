@@ -1,105 +1,102 @@
 import {
   ArrowDownUp,
   Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Download,
+  FileQuestion,
+  FolderOpen,
   Image,
   ListChecks,
   LoaderCircle,
   LocateFixed,
-  Map as MapIcon,
   Package,
+  Play,
   Plus,
+  RefreshCw,
   Search,
   Sparkles,
-  UserRound,
   Video,
   Volume2,
   X,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
-  linkOutputFilesToCanvas,
   mergeCanvasMediaFiles,
   generatedFileDownloadName,
   generatedFileDownloadUrl,
   generatedFilePreviewUrl,
   isLocallyDownloadableUrl,
-  type CanvasMediaFile,
   triggerMediaDownload,
 } from '../services/artifactClient';
+import {
+  buildAssetBrowserIndex,
+  assetEmptyState,
+  formatAssetSize,
+  MAX_ASSET_EXPORT_FILES,
+  parseAssetFileList,
+  safeAssetPreviewUrl,
+  scopeAssets,
+  searchAssets,
+  sortAssets,
+  type AssetOrigin,
+  type AssetScope,
+  type AssetSort,
+  type BrowserAsset,
+} from '../services/assetBrowser';
 import { generationClient, type FileExportJob } from '../services/generationClient';
 import { useCanvasStore } from '../store/canvasStore';
 import type { GeneratedFile, GenerationJob } from '../types';
 import type { RailPanelId } from './LeftRail';
 import { SettingsPanel } from './SettingsPanel';
+import { CreativeStudioPanel } from './CreativeStudioPanel';
+import '../assets-panel.css';
 
 interface RailPanelsProps {
   activePanel: RailPanelId | null;
   onPanelChange: (panel: RailPanelId | null) => void;
 }
 
-const assetTabs = [
-  { id: 'people', label: '人物', empty: '暂无人物资产', icon: UserRound },
-  { id: 'scene', label: '场景', empty: '暂无场景资产', icon: MapIcon },
-  { id: 'object', label: '物品', empty: '暂无物品资产', icon: Package },
-] as const;
-
-const fileTabs = ['当前画布生成', '历史生成', '输出文件夹'] as const;
+const fileTabs: Array<{ id: AssetScope; label: string }> = [
+  { id: 'current', label: '当前画布' },
+  { id: 'project', label: '全部画布' },
+  { id: 'output', label: '输出文件夹' },
+];
 const mediaFilters = [
   { label: '所有', type: 'all', icon: Sparkles },
-  { label: '图像', type: 'image', icon: Image },
+  { label: '图片', type: 'image', icon: Image },
   { label: '视频', type: 'video', icon: Video },
-  { label: '声音', type: 'audio', icon: Volume2 },
+  { label: '音频', type: 'audio', icon: Volume2 },
+  { label: '其他', type: 'other', icon: Package },
 ] as const;
+const assetTypeLabels = { image: '图片', video: '视频', audio: '音频', other: '文件' };
+const assetOriginLabels = { imported: '导入素材', generated: '生成结果', output: '未关联画布' };
+const assetsPerPage = 36;
 
 function PanelShell({
   children,
   className,
   onClose,
   title,
+  subtitle,
 }: {
   className: string;
   onClose: () => void;
   title: string;
+  subtitle?: ReactNode;
   children: ReactNode;
 }) {
   return (
-    <section className={`floating-panel rail-panel ${className}`}>
+    <section className={`floating-panel rail-panel ${className}`} aria-label={title}>
       <header className="rail-panel-header">
-        <h2>{title}</h2>
+        <div><h2>{title}</h2>{subtitle && <div className="asset-panel-subtitle">{subtitle}</div>}</div>
         <button className="rail-panel-close" type="button" onClick={onClose} aria-label="关闭面板">
           <X size={22} />
         </button>
       </header>
       {children}
     </section>
-  );
-}
-
-function AssetsPanel({ onClose }: { onClose: () => void }) {
-  const [activeTab, setActiveTab] = useState<(typeof assetTabs)[number]['id']>('people');
-  const current = assetTabs.find((tab) => tab.id === activeTab) ?? assetTabs[0];
-  const CurrentIcon = current.icon;
-
-  return (
-    <PanelShell className="rail-panel-assets" title="资产" onClose={onClose}>
-      <div className="asset-tabbar">
-        {assetTabs.map((tab) => (
-          <button
-            className={activeTab === tab.id ? 'is-active' : ''}
-            key={tab.id}
-            type="button"
-            onClick={() => setActiveTab(tab.id)}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
-      <div className="asset-empty">
-        <CurrentIcon size={30} />
-        <span>{current.empty}</span>
-      </div>
-    </PanelShell>
   );
 }
 
@@ -115,52 +112,129 @@ function WorkflowPanel({ onClose }: { onClose: () => void }) {
   );
 }
 
+function AssetPreview({ file }: { file: BrowserAsset }) {
+  const [failed, setFailed] = useState(false);
+  const [videoVisible, setVideoVisible] = useState(false);
+  const [videoReady, setVideoReady] = useState(false);
+  const previewRef = useRef<HTMLAnchorElement>(null);
+  const previewUrl = safeAssetPreviewUrl(generatedFilePreviewUrl(file));
+  useEffect(() => { setFailed(false); setVideoReady(false); }, [previewUrl]);
+  useEffect(() => {
+    const element = previewRef.current;
+    if (file.type !== 'video' || !element) return;
+    if (typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(([entry]) => {
+      setVideoVisible(entry.isIntersecting);
+      if (!entry.isIntersecting) setVideoReady(false);
+    }, { root: element.closest('.asset-library'), rootMargin: '0px', threshold: 0.05 });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [file.type, previewUrl]);
+  return (
+    <a ref={previewRef} className="asset-preview" href={previewUrl || undefined} target="_blank" rel="noreferrer" aria-label={previewUrl ? `预览 ${file.title}` : `${file.title} 暂无预览地址`} aria-disabled={!previewUrl}>
+      {file.type === 'image' && previewUrl && !failed ? (
+        <img src={previewUrl} alt={file.title} loading="lazy" decoding="async" onError={() => setFailed(true)} />
+      ) : (
+        <div className={`asset-preview-placeholder type-${file.type}`}>
+          {failed || !previewUrl ? <FileQuestion size={30} /> : file.type === 'video' ? <Video size={30} /> : file.type === 'audio' ? <Volume2 size={30} /> : <Package size={30} />}
+          {file.type === 'audio' && <div className="asset-audio-wave" aria-hidden="true">{[12, 21, 16, 30, 42, 25, 35, 17, 28, 39, 20, 12].map((height, index) => <i key={index} style={{ height }} />)}</div>}
+          <span>{!previewUrl ? '暂无预览地址' : failed ? '预览暂不可用' : file.type === 'video' ? '点击播放视频' : file.type === 'audio' ? '点击试听音频' : '打开文件'}</span>
+        </div>
+      )}
+      {file.type === 'video' && previewUrl && videoVisible && !failed && (
+        <video
+          className={`asset-video-thumbnail ${videoReady ? 'is-ready' : ''}`}
+          src={previewUrl}
+          preload="metadata"
+          muted
+          playsInline
+          disablePictureInPicture
+          disableRemotePlayback
+          tabIndex={-1}
+          aria-hidden="true"
+          onLoadedMetadata={(event) => {
+            const video = event.currentTarget;
+            if (Number.isFinite(video.duration) && video.duration > 0) {
+              try { video.currentTime = Math.min(0.08, video.duration / 2); } catch { /* Metadata can precede a seekable range. */ }
+            }
+          }}
+          onLoadedData={() => setVideoReady(true)}
+          onSeeked={() => setVideoReady(true)}
+          onError={() => setFailed(true)}
+        />
+      )}
+      <span className={`asset-type-badge type-${file.type}`}>{assetTypeLabels[file.type]}</span>
+      {file.type === 'video' && previewUrl && !failed && <span className="asset-preview-play" aria-hidden="true"><Play size={16} fill="currentColor" /></span>}
+    </a>
+  );
+}
+
 function FileManagerPanel({ onClose }: { onClose: () => void }) {
   const activeCanvas = useCanvasStore((state) => state.activeCanvas);
+  const canvases = useCanvasStore((state) => state.project.canvases);
   const revealNode = useCanvasStore((state) => state.revealNode);
-  const [activeTab, setActiveTab] = useState<(typeof fileTabs)[number]>('当前画布生成');
+  const [activeTab, setActiveTab] = useState<AssetScope>('current');
   const [activeFilter, setActiveFilter] = useState<(typeof mediaFilters)[number]['type']>('all');
+  const [originFilter, setOriginFilter] = useState<'all' | AssetOrigin>('all');
+  const [sort, setSort] = useState<AssetSort>('newest');
+  const [page, setPage] = useState(1);
   const [searchQuery, setSearchQuery] = useState('');
   const [files, setFiles] = useState<GeneratedFile[]>([]);
   const [filesError, setFilesError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [refreshKey, setRefreshKey] = useState(0);
   const [selectedFileIds, setSelectedFileIds] = useState<Set<string>>(() => new Set());
   const [exporting, setExporting] = useState(false);
   const [exportNotice, setExportNotice] = useState('');
   const mountedRef = useRef(true);
-  const indexedFiles = useMemo<CanvasMediaFile[]>(
-    () => activeTab === '当前画布生成'
-      ? mergeCanvasMediaFiles(activeCanvas, files)
-      : linkOutputFilesToCanvas(activeCanvas, files),
-    [activeCanvas, activeTab, files],
-  );
-  const visibleFiles = useMemo(() => {
-    const needle = searchQuery.trim().toLocaleLowerCase();
-    return indexedFiles.filter((file) => {
-      if (activeFilter !== 'all' && file.type !== activeFilter) return false;
-      if (!needle) return true;
-      return [file.title, file.nodeTitle, file.canvasName, file.mimeType, file.type]
-        .filter(Boolean)
-        .some((value) => String(value).toLocaleLowerCase().includes(needle));
+  const gridRef = useRef<HTMLDivElement>(null);
+  const indexedFiles = useMemo(() => {
+    const canvasFiles = canvases.flatMap((canvas) => {
+      const importedNodeIds = new Set(canvas.nodes.filter((node) => node.data.importedMedia).map((node) => node.id));
+      return mergeCanvasMediaFiles(canvas, files).map((file) => ({
+        ...file,
+        origin: (file.nodeId && importedNodeIds.has(file.nodeId) ? 'imported' : 'generated') as AssetOrigin,
+      }));
     });
-  }, [activeFilter, indexedFiles, searchQuery]);
-  const exportableVisibleFiles = visibleFiles.filter((file) => Boolean(file.artifactId));
+    return buildAssetBrowserIndex(canvasFiles, files, activeCanvas.id);
+  }, [activeCanvas.id, canvases, files]);
+  const scopedFiles = useMemo(() => scopeAssets(indexedFiles, activeTab, activeCanvas.id), [activeCanvas.id, activeTab, indexedFiles]);
+  const searchedFiles = useMemo(() => searchAssets(scopedFiles, searchQuery, originFilter), [scopedFiles, searchQuery, originFilter]);
+  const visibleFiles = useMemo(() => sortAssets(searchedFiles.filter((file) => activeFilter === 'all' || file.type === activeFilter), sort), [searchedFiles, activeFilter, sort]);
+  const pageCount = Math.max(1, Math.ceil(visibleFiles.length / assetsPerPage));
+  const currentPage = Math.min(page, pageCount);
+  const pageFiles = visibleFiles.slice((currentPage - 1) * assetsPerPage, currentPage * assetsPerPage);
+  const exportableVisibleFiles = pageFiles.filter((file) => Boolean(file.artifactId) && isLocallyDownloadableUrl(generatedFileDownloadUrl(file)));
   const allVisibleSelected = exportableVisibleFiles.length > 0
     && exportableVisibleFiles.every((file) => selectedFileIds.has(file.artifactId as string));
+  const hasFilters = Boolean(searchQuery || activeFilter !== 'all' || originFilter !== 'all');
+  const emptyState = assetEmptyState(activeTab, hasFilters, loading, Boolean(filesError));
+  const selectionLimitReached = selectedFileIds.size >= MAX_ASSET_EXPORT_FILES;
+
+  useEffect(() => { setPage(1); }, [activeTab, activeFilter, originFilter, searchQuery, sort, activeCanvas.id]);
+  useEffect(() => { gridRef.current?.scrollTo({ top: 0 }); }, [currentPage, activeTab, activeFilter, originFilter, searchQuery, sort, activeCanvas.id]);
 
   useEffect(() => {
     mountedRef.current = true;
     let mounted = true;
+    let pending = false;
     const loadFiles = () => {
+      if (pending) return;
+      pending = true;
       void generationClient
         .listFiles()
         .then((items) => {
           if (!mounted) return;
-          setFiles(items);
+          setFiles(parseAssetFileList(items));
           setFilesError('');
         })
         .catch((error) => {
           if (!mounted) return;
           setFilesError(error instanceof Error ? error.message : String(error));
+        })
+        .finally(() => {
+          pending = false;
+          if (mounted) setLoading(false);
         });
     };
     loadFiles();
@@ -170,7 +244,7 @@ function FileManagerPanel({ onClose }: { onClose: () => void }) {
       mountedRef.current = false;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [refreshKey]);
 
   useEffect(() => {
     const currentIds = new Set(indexedFiles.map((file) => file.artifactId).filter((id): id is string => Boolean(id)));
@@ -186,7 +260,7 @@ function FileManagerPanel({ onClose }: { onClose: () => void }) {
     setSelectedFileIds((current) => {
       const next = new Set(current);
       if (next.has(fileId)) next.delete(fileId);
-      else next.add(fileId);
+      else if (next.size < MAX_ASSET_EXPORT_FILES) next.add(fileId);
       return next;
     });
   };
@@ -197,7 +271,7 @@ function FileManagerPanel({ onClose }: { onClose: () => void }) {
       exportableVisibleFiles.forEach((file) => {
         const fileId = file.artifactId as string;
         if (allVisibleSelected) next.delete(fileId);
-        else next.add(fileId);
+        else if (next.size < MAX_ASSET_EXPORT_FILES) next.add(fileId);
       });
       return next;
     });
@@ -208,6 +282,10 @@ function FileManagerPanel({ onClose }: { onClose: () => void }) {
 
   const downloadSelectedAsZip = async () => {
     if (exporting || selectedFileIds.size === 0) return;
+    if (selectedFileIds.size > MAX_ASSET_EXPORT_FILES) {
+      setExportNotice(`一次最多打包 ${MAX_ASSET_EXPORT_FILES} 个文件，请减少选择后重试。`);
+      return;
+    }
     setExporting(true);
     setExportNotice(`正在打包 ${selectedFileIds.size} 个文件…`);
     try {
@@ -239,138 +317,110 @@ function FileManagerPanel({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <PanelShell className="rail-panel-files" title="文件管理" onClose={onClose}>
-      <div className="file-tabs">
-        {fileTabs.map((tab) => (
-          <button className={activeTab === tab ? 'is-active' : ''} key={tab} type="button" onClick={() => setActiveTab(tab)}>
-            {tab}
-          </button>
-        ))}
-      </div>
-      <div className="file-subtitle">{activeTab}媒体历史</div>
-      <label className="file-search">
-        <Search size={18} />
-        <input
-          value={searchQuery}
-          onChange={(event) => setSearchQuery(event.currentTarget.value)}
-          placeholder="搜索文件名、节点或媒体类型"
-        />
-        <span>{visibleFiles.length}</span>
-      </label>
-      <div className="media-filter-row">
-        <div className="media-filters">
+    <PanelShell className="rail-panel-files asset-library" title="资产库" subtitle={`${canvases.length} 个画布 · ${indexedFiles.length} 个媒体文件`} onClose={onClose}>
+      <div className="asset-library-controls">
+        <div className="asset-scope-tabs" role="tablist" aria-label="资产范围">
+          {fileTabs.map((tab) => (
+            <button className={activeTab === tab.id ? 'is-active' : ''} key={tab.id} type="button" role="tab" aria-selected={activeTab === tab.id} onClick={() => setActiveTab(tab.id)}>
+              {tab.label}
+            </button>
+          ))}
+        </div>
+        <div className="asset-search-row">
+          <label className="asset-search-field">
+            <Search size={17} />
+            <input value={searchQuery} onChange={(event) => setSearchQuery(event.currentTarget.value)} aria-label="搜索资产" placeholder="搜索文件名、节点、画布…" />
+            {searchQuery && <button type="button" aria-label="清空搜索" onClick={() => setSearchQuery('')}><X size={15} /></button>}
+          </label>
+          <label className="asset-select-control">
+            <select value={originFilter} aria-label="资产来源" onChange={(event) => setOriginFilter(event.currentTarget.value as 'all' | AssetOrigin)}>
+              <option value="all">全部来源</option>
+              <option value="imported">导入素材</option>
+              <option value="generated">生成结果</option>
+              <option value="output">未关联画布</option>
+            </select>
+            <ChevronDown size={14} aria-hidden="true" />
+          </label>
+          <label className="asset-select-control asset-sort-control">
+            <ArrowDownUp size={15} aria-hidden="true" />
+            <select value={sort} aria-label="资产排序" onChange={(event) => setSort(event.currentTarget.value as AssetSort)}>
+              <option value="newest">最近创建</option>
+              <option value="oldest">最早创建</option>
+              <option value="name">名称 A–Z</option>
+              <option value="size">文件大小</option>
+            </select>
+            <ChevronDown size={14} aria-hidden="true" />
+          </label>
+        </div>
+        <div className="asset-type-filters" aria-label="媒体类型">
           {mediaFilters.map((filter) => {
             const Icon = filter.icon;
-            return (
-              <button
-                className={activeFilter === filter.type ? 'is-active' : ''}
-                key={filter.label}
-                type="button"
-                onClick={() => setActiveFilter(filter.type)}
-              >
-                <Icon size={18} />
-                <span>{filter.label}</span>
-              </button>
-            );
+            const count = filter.type === 'all' ? searchedFiles.length : searchedFiles.filter((file) => file.type === filter.type).length;
+            if (filter.type === 'other' && count === 0 && activeFilter !== 'other') return null;
+            return <button className={activeFilter === filter.type ? 'is-active' : ''} key={filter.type} type="button" aria-pressed={activeFilter === filter.type} onClick={() => setActiveFilter(filter.type)}><Icon size={15} /><span>{filter.label}</span><small>{count}</small></button>;
           })}
+          <button className="asset-refresh" type="button" aria-label="刷新资产列表" disabled={loading} onClick={() => { setLoading(true); setRefreshKey((current) => current + 1); }}><RefreshCw size={15} className={loading ? 'spin' : ''} /></button>
         </div>
-        <button className="sort-button" type="button" aria-label="排序">
-          <ArrowDownUp size={22} />
-        </button>
       </div>
-      {indexedFiles.length > 0 && (
-        <div className="file-batch-toolbar">
-          <button
-            className={allVisibleSelected ? 'is-active' : ''}
-            type="button"
-            disabled={exportableVisibleFiles.length === 0 || exporting}
-            onClick={toggleVisibleSelection}
-          >
-            <span className="file-selection-box">{allVisibleSelected && <Check size={14} strokeWidth={3} />}</span>
-            <span>{allVisibleSelected ? '取消全选' : '选择当前结果'}</span>
-          </button>
-          <span className="file-selection-count">已选 {selectedFileIds.size} 项</span>
-          <button
-            className="file-batch-download"
-            type="button"
-            disabled={selectedFileIds.size === 0 || exporting}
-            onClick={() => void downloadSelectedAsZip()}
-          >
-            {exporting ? <LoaderCircle className="spin" size={17} /> : <Package size={17} />}
-            <span>{exporting ? '正在打包' : '打包下载 ZIP'}</span>
-          </button>
-        </div>
-      )}
-      {exportNotice && <div className={`file-export-notice ${exporting ? 'is-running' : ''}`}>{exportNotice}</div>}
-      <div className="media-grid">
-        {filesError && indexedFiles.length === 0 && <div className="media-empty">文件服务暂不可用：{filesError}</div>}
-        {indexedFiles.length > 0 && visibleFiles.length === 0 && <div className="media-empty">暂无匹配媒体</div>}
-        {visibleFiles.length > 0 &&
-          visibleFiles.map((file) => {
-            const previewUrl = generatedFilePreviewUrl(file);
+      <div className="asset-result-summary">
+        <span>{activeTab === 'current' ? activeCanvas.name : activeTab === 'project' ? '所有画布中的素材' : '已保存的输出文件'}<strong>{visibleFiles.length} 项</strong></span>
+        {hasFilters && <button type="button" onClick={() => { setSearchQuery(''); setActiveFilter('all'); setOriginFilter('all'); }}>清除筛选</button>}
+      </div>
+      {filesError && <div className="asset-service-notice" role="status">文件列表暂未同步{indexedFiles.length > 0 ? '，仍可浏览已索引素材' : ''}。<button type="button" onClick={() => { setLoading(true); setRefreshKey((current) => current + 1); }}>重试</button><span title={filesError}>查看连接状态</span></div>}
+      <div className="asset-grid-scroll" ref={gridRef} aria-busy={loading && pageFiles.length === 0}>
+        <div className="asset-library-grid">
+          {pageFiles.length === 0 ? (
+            <div className="asset-library-empty" role="status">{emptyState.pending ? <LoaderCircle size={28} className="spin" /> : emptyState.failed ? <FileQuestion size={32} /> : <FolderOpen size={32} />}<strong>{emptyState.title}</strong><span>{emptyState.detail}</span>{!emptyState.pending && (emptyState.failed ? <button type="button" onClick={() => { setLoading(true); setRefreshKey((current) => current + 1); }}>重新读取</button> : (hasFilters || activeTab === 'current') && <button type="button" onClick={() => { setSearchQuery(''); setActiveFilter('all'); setOriginFilter('all'); if (!hasFilters) setActiveTab('project'); }}>{hasFilters ? '清除筛选' : '查看全部画布'}</button>)}</div>
+          ) : pageFiles.map((file) => {
             const downloadUrl = generatedFileDownloadUrl(file);
             const downloadable = isLocallyDownloadableUrl(downloadUrl);
             const selected = Boolean(file.artifactId && selectedFileIds.has(file.artifactId));
             return (
-              <article
-                className={`media-card generated-media-card ${selected ? 'is-selected' : ''}`}
-                key={`${file.canvasId ?? 'output'}:${file.nodeId ?? 'file'}:${file.id}`}
-                title={file.nodeId ? `${file.title} · 位于 ${file.canvasName ?? '当前画布'}` : file.title}
-              >
-                <a className="generated-media-preview" href={previewUrl} target="_blank" rel="noreferrer" aria-label={`预览 ${file.title}`}>
-                  {file.type === 'image' ? (
-                    <img src={previewUrl} alt={file.title} />
-                  ) : (
-                    <div className={`generated-media-fallback type-${file.type}`}>
-                      {file.type === 'video' ? <Video size={34} /> : <Volume2 size={34} />}
-                    </div>
-                  )}
-                </a>
-                <button
-                  className="media-card-select"
-                  type="button"
-                  aria-label={selected ? `取消选择 ${file.title}` : `选择 ${file.title}`}
-                  aria-pressed={selected}
-                  disabled={!file.artifactId}
-                  onClick={() => toggleFileSelection(file.artifactId)}
-                >
-                  {selected && <Check size={14} strokeWidth={3} />}
-                </button>
-                <button
-                  className="media-card-download"
-                  type="button"
-                  aria-label={`下载 ${file.title}`}
-                  title={downloadable ? '下载' : '暂不可下载：文件尚未落盘'}
-                  disabled={!downloadable}
-                  onClick={() => triggerMediaDownload(downloadUrl, generatedFileDownloadName(file))}
-                >
-                  <Download size={16} />
-                </button>
-                {file.nodeId && (
-                  <button
-                    className="media-card-locate"
-                    type="button"
-                    aria-label={`在画布中定位 ${file.title}`}
-                    title="定位到画布"
-                    onClick={() => {
-                      revealNode(file.nodeId as string, file.canvasId);
-                      onClose();
-                    }}
-                  >
-                    <LocateFixed size={16} />
-                  </button>
-                )}
-                <span className="media-card-title">{file.title}</span>
-                {file.nodeId && <span className="media-card-context">{file.nodeTitle || '素材节点'}</span>}
+              <article className={`asset-library-card ${selected ? 'is-selected' : ''}`} key={file.key} aria-label={file.title}>
+                <div className="asset-card-cover">
+                  <AssetPreview file={file} />
+                  <button className="asset-card-select" type="button" aria-label={selected ? `取消选择 ${file.title}` : `选择 ${file.title}`} aria-pressed={selected} disabled={!file.artifactId || !downloadable || exporting || (selectionLimitReached && !selected)} title={!file.artifactId || !downloadable ? '文件落盘后可加入打包' : selectionLimitReached && !selected ? `一次最多选择 ${MAX_ASSET_EXPORT_FILES} 个文件` : '选择文件'} onClick={() => toggleFileSelection(file.artifactId)}>{selected && <Check size={13} strokeWidth={3} />}</button>
+                  <div className="asset-card-actions">
+                    {file.nodeId && <button type="button" aria-label={`在画布中定位 ${file.title}`} title={`定位到 ${file.canvasName}`} onClick={() => { revealNode(file.nodeId as string, file.canvasId); onClose(); }}><LocateFixed size={16} /></button>}
+                    <button type="button" aria-label={`下载 ${file.title}`} title={downloadable ? '下载原文件' : '暂不可下载：文件尚未落盘'} disabled={!downloadable} onClick={() => triggerMediaDownload(downloadUrl, generatedFileDownloadName(file))}><Download size={16} /></button>
+                  </div>
+                </div>
+                <div className="asset-card-info">
+                  <strong title={file.title}>{file.title}</strong>
+                  <div className="asset-card-meta"><span>{file.origins.map((origin) => assetOriginLabels[origin]).join(' / ')}</span><span>{formatAssetSize(file.size)}</span></div>
+                  <div className="asset-card-location">
+                    <span title={file.locations.map((location) => `${location.canvasName} · ${location.nodeTitle}`).join('\n')}>{file.canvasName || '尚未关联画布'}{file.locations.length > 1 ? ` +${file.locations.length - 1} 处` : ''}</span>
+                    {!downloadable && <small>待落盘</small>}
+                    {file.locations.length > 1 ? (
+                      <label className="asset-location-picker">
+                        <LocateFixed size={12} aria-hidden="true" />
+                        <select aria-label={`选择 ${file.title} 的画布位置`} value="" onChange={(event) => {
+                          const location = file.locations[Number(event.currentTarget.value)];
+                          if (!location) return;
+                          revealNode(location.nodeId, location.canvasId);
+                          onClose();
+                        }}>
+                          <option value="" disabled>定位</option>
+                          {file.locations.map((location, index) => <option key={`${location.canvasId}:${location.nodeId}`} value={index}>{location.canvasName} · {location.nodeTitle}</option>)}
+                        </select>
+                        <ChevronDown size={11} aria-hidden="true" />
+                      </label>
+                    ) : file.nodeId && <button type="button" aria-label={`定位素材 ${file.title}`} onClick={() => { revealNode(file.nodeId as string, file.canvasId); onClose(); }}><LocateFixed size={12} />定位</button>}
+                  </div>
+                </div>
               </article>
             );
           })}
-        {!filesError && indexedFiles.length === 0 && (
-          <div className="media-empty">
-            {activeTab === '当前画布生成' ? '当前画布还没有可管理的媒体资产' : '输出文件夹为空'}
-          </div>
-        )}
+        </div>
       </div>
+      {pageCount > 1 && <nav className="asset-pagination" aria-label="资产分页"><span>第 {currentPage} / {pageCount} 页 · 每页 {assetsPerPage} 项</span><button type="button" aria-label="上一页资产" disabled={currentPage <= 1} onClick={() => setPage(currentPage - 1)}><ChevronLeft size={17} /></button><button type="button" aria-label="下一页资产" disabled={currentPage >= pageCount} onClick={() => setPage(currentPage + 1)}><ChevronRight size={17} /></button></nav>}
+      {exportNotice && <div className={`asset-export-notice ${exporting ? 'is-running' : ''}`} role="status">{exportNotice}</div>}
+      <footer className="asset-batch-footer">
+        <button className={`asset-select-page ${allVisibleSelected ? 'is-active' : ''}`} type="button" disabled={exportableVisibleFiles.length === 0 || exporting || (selectionLimitReached && !allVisibleSelected)} onClick={toggleVisibleSelection}><span className="asset-selection-box">{allVisibleSelected && <Check size={12} strokeWidth={3} />}</span><span>{allVisibleSelected ? '取消本页选择' : '选择本页'}</span></button>
+        <span className="asset-selection-summary" title={`一次最多打包 ${MAX_ASSET_EXPORT_FILES} 项`}>已选 <strong>{selectedFileIds.size}</strong> / {MAX_ASSET_EXPORT_FILES} 项</span>
+        {selectedFileIds.size > 0 && <button className="asset-clear-selection" type="button" disabled={exporting} onClick={() => setSelectedFileIds(new Set())}>清空</button>}
+        <button className="asset-batch-download" type="button" disabled={selectedFileIds.size === 0 || exporting} onClick={() => void downloadSelectedAsZip()}>{exporting ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}<span>{exporting ? '正在打包…' : '打包下载'}</span></button>
+      </footer>
     </PanelShell>
   );
 }
@@ -489,7 +539,8 @@ function TaskPanel({ onClose }: { onClose: () => void }) {
 export function RailPanels({ activePanel, onPanelChange }: RailPanelsProps) {
   const close = () => onPanelChange(null);
   if (!activePanel) return null;
-  if (activePanel === 'assets') return <AssetsPanel onClose={close} />;
+  if (activePanel === 'creative') return <CreativeStudioPanel onClose={close} />;
+  if (activePanel === 'assets') return <FileManagerPanel onClose={close} />;
   if (activePanel === 'workflows') return <WorkflowPanel onClose={close} />;
   if (activePanel === 'files') return <FileManagerPanel onClose={close} />;
   if (activePanel === 'tasks') return <TaskPanel onClose={close} />;

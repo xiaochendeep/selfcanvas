@@ -5,6 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>CanvasPro UI Studio</title>
+    <script type="module">
+      // Explicit design captures only; never load third-party tooling in production.
+      if (import.meta.env.DEV && location.hash.includes('figmacapture=')) {
+        const capture = document.createElement('script');
+        capture.src = 'https://mcp.figma.com/mcp/html-to-design/capture.js';
+        capture.async = true;
+        document.head.appendChild(capture);
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

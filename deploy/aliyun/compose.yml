@@ -1,0 +1,218 @@
+name: selfcanvas-private
+
+x-runtime: &runtime
+  restart: unless-stopped
+  network_mode: host
+  cgroup_parent: selfcanvas.slice
+  security_opt: [no-new-privileges:true]
+  logging:
+    driver: local
+    options: { max-size: "10m", max-file: "3" }
+
+x-canvas-environment: &canvas-environment
+  SELF_CANVAS_STORAGE_ROOT: /app
+  SELF_CANVAS_API_TOKEN: ${SELF_CANVAS_API_TOKEN:?required}
+  REDIS_URL: redis://:${CANVAS_REDIS_PASSWORD:?required}@127.0.0.1:16380/0
+  SUB2API_BASE_URL: http://127.0.0.1:8080
+  SUB2API_API_KEY: ${SUB2API_API_KEY:-}
+  SELF_CANVAS_CREATIVE_BASE_URL: http://127.0.0.1:8080/v1
+  SELF_CANVAS_CREATIVE_API_KEY: ${SUB2API_API_KEY:-}
+  SELF_CANVAS_CREATIVE_TEXT_MODEL: ${SELF_CANVAS_CREATIVE_TEXT_MODEL:-}
+  SELF_CANVAS_CREATIVE_VISION_BASE_URL: ${SELF_CANVAS_CREATIVE_VISION_BASE_URL:-}
+  SELF_CANVAS_CREATIVE_VISION_API_KEY: ${SELF_CANVAS_CREATIVE_VISION_API_KEY:-}
+  SELF_CANVAS_CREATIVE_VISION_MODEL: ${SELF_CANVAS_CREATIVE_VISION_MODEL:-}
+  SELF_CANVAS_CREATIVE_VIDEO_PROTOCOL: ${SELF_CANVAS_CREATIVE_VIDEO_PROTOCOL:-gemini}
+  SELF_CANVAS_CREATIVE_TIMEOUT_SECONDS: 90
+  ANYCAP_BIN: anycap
+  ANYCAP_VIDEO_MODEL: seedance-2.5
+  ANYCAP_AUDIO_MODEL: doubao-seed-audio-1-0
+  OUTPUT_DIR: /app/output
+  NODE_OPTIONS: --max-old-space-size=192
+
+services:
+  postgres:
+    <<: *runtime
+    image: postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
+    mem_limit: 192m
+    environment:
+      POSTGRES_USER: sub2api
+      POSTGRES_DB: sub2api
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
+      PGDATA: /var/lib/postgresql/data
+      TZ: Asia/Shanghai
+    command: [postgres, -p, "15432", -c, listen_addresses=127.0.0.1, -c, shared_buffers=32MB, -c, max_connections=30, -c, work_mem=2MB]
+    volumes: [./data/postgres:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -h 127.0.0.1 -p 15432 -U sub2api -d sub2api"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  gateway-redis:
+    <<: *runtime
+    image: redis:8-alpine@sha256:becdda6c7f4b3fb42e42fd7f120bbf5c54c4caaaf16f26da24e4563d2c1f0576
+    mem_limit: 96m
+    environment:
+      REDIS_PASSWORD: ${GATEWAY_REDIS_PASSWORD:?required}
+      REDISCLI_AUTH: ${GATEWAY_REDIS_PASSWORD:?required}
+    command: [sh, -c, 'exec redis-server --bind 127.0.0.1 --port 16379 --appendonly yes --save 60 1 --maxmemory 64mb --maxmemory-policy noeviction --requirepass "$$REDIS_PASSWORD"']
+    volumes: [./data/gateway-redis:/data]
+    healthcheck:
+      test: [CMD, redis-cli, -p, "16379", ping]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  canvas-redis:
+    <<: *runtime
+    image: redis:8-alpine@sha256:becdda6c7f4b3fb42e42fd7f120bbf5c54c4caaaf16f26da24e4563d2c1f0576
+    mem_limit: 96m
+    environment:
+      REDIS_PASSWORD: ${CANVAS_REDIS_PASSWORD:?required}
+      REDISCLI_AUTH: ${CANVAS_REDIS_PASSWORD:?required}
+    command: [sh, -c, 'exec redis-server --bind 127.0.0.1 --port 16380 --appendonly yes --save 60 1 --maxmemory 64mb --maxmemory-policy noeviction --requirepass "$$REDIS_PASSWORD"']
+    volumes: [./data/canvas-redis:/data]
+    healthcheck:
+      test: [CMD, redis-cli, -p, "16380", ping]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  sub2api:
+    <<: *runtime
+    image: weishaw/sub2api:0.2.3@sha256:ef61f1535e2396acd8420baf6a2d07a25db7e891448b1c03608b2b00354c37cf
+    mem_limit: 384m
+    environment:
+      AUTO_SETUP: "true"
+      SERVER_HOST: 127.0.0.1
+      SERVER_PORT: 8080
+      SERVER_MODE: release
+      SERVER_TRUSTED_PROXIES: 127.0.0.1
+      RUN_MODE: standard
+      DATABASE_HOST: 127.0.0.1
+      DATABASE_PORT: 15432
+      DATABASE_USER: sub2api
+      DATABASE_DBNAME: sub2api
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD:?required}
+      DATABASE_SSLMODE: disable
+      DATABASE_MAX_OPEN_CONNS: 10
+      DATABASE_MAX_IDLE_CONNS: 2
+      REDIS_HOST: 127.0.0.1
+      REDIS_PORT: 16379
+      REDIS_PASSWORD: ${GATEWAY_REDIS_PASSWORD:?required}
+      REDIS_POOL_SIZE: 20
+      REDIS_MIN_IDLE_CONNS: 2
+      ADMIN_EMAIL: admin@selfcanvas.local
+      ADMIN_PASSWORD: ${SUB2API_ADMIN_PASSWORD:?required}
+      JWT_SECRET: ${SUB2API_JWT_SECRET:?required}
+      TOTP_ENCRYPTION_KEY: ${SUB2API_TOTP_KEY:?required}
+      SECURITY_URL_ALLOWLIST_ENABLED: "true"
+      SECURITY_TRUST_FORWARDED_IP_FOR_API_KEY_ACL: "false"
+      SECURITY_URL_ALLOWLIST_ALLOW_INSECURE_HTTP: "false"
+      SECURITY_URL_ALLOWLIST_ALLOW_PRIVATE_HOSTS: "false"
+      SECURITY_URL_ALLOWLIST_UPSTREAM_HOSTS: api.openai.com,api.anthropic.com,generativelanguage.googleapis.com,chatgpt.com
+      GATEWAY_MAX_BODY_SIZE: 33554432
+      GATEWAY_MAX_CONNS_PER_HOST: 20
+      GATEWAY_MAX_IDLE_CONNS: 30
+      GATEWAY_MAX_IDLE_CONNS_PER_HOST: 10
+      GOMEMLIMIT: 256MiB
+      GOMAXPROCS: 1
+      TZ: Asia/Shanghai
+    volumes: [./data/sub2api:/app/data]
+    depends_on:
+      postgres: {condition: service_healthy}
+      gateway-redis: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, wget, -q, -T, "5", -O, /dev/null, http://127.0.0.1:8080/health]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  selfcanvas:
+    <<: *runtime
+    image: selfcanvas:2026-09-08-private
+    mem_limit: 256m
+    command: [python3, server.py]
+    environment:
+      <<: *canvas-environment
+      SELF_CANVAS_HOST: 127.0.0.1
+      SELF_CANVAS_PORT: 8787
+      SELF_CANVAS_EXPORT_CONCURRENCY: 1
+      SELF_CANVAS_MAX_EXPORT_GB: 2
+      SELF_CANVAS_MIN_FREE_GB: 2
+      SELF_CANVAS_ALLOWED_ORIGINS: http://10.66.66.1:5190,http://100.78.18.60:5190
+      PYTHONUNBUFFERED: 1
+    volumes:
+      - ./data/canvas-runtime:/app/.runtime
+      - ./data/canvas-output:/app/output
+      - ./data/anycap:/home/node/.anycap
+    depends_on:
+      canvas-redis: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, curl, -fsS, http://127.0.0.1:8787/api/health]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  selfcanvas-mcp:
+    <<: *runtime
+    image: selfcanvas:2026-09-08-private
+    mem_limit: 128m
+    command: [node, mcp/http.mjs]
+    environment:
+      SELF_CANVAS_MCP_HOST: 127.0.0.1
+      SELF_CANVAS_MCP_PORT: 8790
+      SELF_CANVAS_HEALTH_URL: http://127.0.0.1:8790/health
+      SELF_CANVAS_MCP_TOKEN: ${SELF_CANVAS_MCP_TOKEN:?required}
+      SELF_CANVAS_MCP_SCOPES: canvas:read,generation:read,artifacts:read,artifacts:download
+      SELF_CANVAS_BASE_URL: http://127.0.0.1:8787
+      SELF_CANVAS_PUBLIC_BASE_URL: http://10.66.66.1:5190
+      SELF_CANVAS_API_TOKEN: ${SELF_CANVAS_API_TOKEN:?required}
+      NODE_OPTIONS: --max-old-space-size=80
+    depends_on:
+      selfcanvas: {condition: service_healthy}
+
+  proxy:
+    <<: *runtime
+    image: nginx:stable-alpine@sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c
+    mem_limit: 32m
+    volumes: [./nginx.conf:/etc/nginx/nginx.conf:ro]
+    depends_on:
+      selfcanvas: {condition: service_healthy}
+      sub2api: {condition: service_healthy}
+
+  media-worker:
+    <<: *runtime
+    profiles: [workers]
+    image: selfcanvas:2026-09-08-private
+    mem_limit: 256m
+    command: [node, workers/media-render-worker/index.mjs]
+    healthcheck: {disable: true}
+    environment:
+      <<: *canvas-environment
+      GENERATION_WORKER_CONCURRENCY: 1
+    volumes:
+      - ./data/canvas-runtime:/app/.runtime
+      - ./data/canvas-output:/app/output
+      - ./data/anycap:/home/node/.anycap
+    depends_on:
+      canvas-redis: {condition: service_healthy}
+
+  video-edit-worker:
+    <<: *runtime
+    profiles: [workers]
+    image: selfcanvas:2026-09-08-private
+    mem_limit: 384m
+    command: [node, workers/video-edit-worker/index.mjs]
+    healthcheck: {disable: true}
+    environment:
+      <<: *canvas-environment
+      VIDEO_EDIT_WORKER_CONCURRENCY: 1
+      VIDEO_EDIT_JOB_TIMEOUT_MS: 1800000
+    volumes:
+      - ./data/canvas-runtime:/app/.runtime
+      - ./data/canvas-output:/app/output
+      - ./data/anycap:/home/node/.anycap
+    depends_on:
+      canvas-redis: {condition: service_healthy}

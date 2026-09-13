@@ -79,10 +79,29 @@ const NodePatchSchema = z
   .strict()
   .refine((value) => Object.keys(value).length > 0, 'patch 不能为空');
 
+const BindReferencesOperationSchema = z
+  .object({
+    type: z.literal('bind_references'),
+    targetNodeId: IdentifierSchema,
+    sourceNodeIds: z.array(IdentifierSchema).min(1).max(9),
+    ensureEdges: z.boolean().default(true),
+    appendMentions: z.boolean().default(true),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (new Set(value.sourceNodeIds).size !== value.sourceNodeIds.length) {
+      context.addIssue({ code: 'custom', path: ['sourceNodeIds'], message: 'sourceNodeIds 不可重复' });
+    }
+    if (value.sourceNodeIds.includes(value.targetNodeId)) {
+      context.addIssue({ code: 'custom', path: ['sourceNodeIds'], message: '不能将节点引用到自身' });
+    }
+  });
+
 const CanvasOperationSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('rename_canvas'), name: z.string().trim().min(1).max(120) }).strict(),
   z.object({ type: z.literal('add_node'), node: NewNodeSchema }).strict(),
   z.object({ type: z.literal('update_node'), nodeId: IdentifierSchema, patch: NodePatchSchema }).strict(),
+  BindReferencesOperationSchema,
   z.object({ type: z.literal('move_node'), nodeId: IdentifierSchema, position: PositionSchema }).strict(),
   z
     .object({ type: z.literal('add_edge'), sourceNodeId: IdentifierSchema, targetNodeId: IdentifierSchema })
@@ -128,6 +147,29 @@ const VideoEditInputSchema = z
   });
 
 const ToolOutputSchema = z.object({ result: z.unknown() });
+
+const CreativeDraftInputSchema = z.object({
+  kind: z.enum(['script', 'storyboard', 'video-analysis']),
+  canvasId: IdentifierSchema,
+  requestId: RequestIdSchema,
+  confirmed: z.literal(true),
+  brief: z.string().max(8_000).optional(),
+  sourceText: z.string().max(40_000).optional(),
+  shotCount: z.number().int().min(1).max(20).optional(),
+  durationSeconds: z.number().int().min(5).max(600).optional(),
+  aspectRatio: z.enum(['9:16', '16:9', '1:1']).optional(),
+  style: z.string().max(1_000).optional(),
+  imageModel: IdentifierSchema.optional(),
+  videoModel: IdentifierSchema.optional(),
+  sourceNodeId: IdentifierSchema.optional(),
+}).strict().superRefine((input, context) => {
+  if (input.kind === 'video-analysis') {
+    if (!input.sourceNodeId) context.addIssue({ code: 'custom', path: ['sourceNodeId'], message: '视频分析需要当前画布中的视频节点 ID' });
+  } else {
+    if (!input.brief?.trim() && !input.sourceText?.trim()) context.addIssue({ code: 'custom', path: ['brief'], message: '请提供创作需求或原始剧本' });
+    if (input.sourceNodeId) context.addIssue({ code: 'custom', path: ['sourceNodeId'], message: '仅视频分析接受视频节点引用' });
+  }
+});
 
 const READ_ANNOTATIONS = Object.freeze({
   readOnlyHint: true,
@@ -249,7 +291,7 @@ export const TOOL_DEFINITIONS = Object.freeze([
     name: 'canvas_apply_operations',
     title: '修改 SelfCanvas 画布',
     description:
-      '以 CAS 方式批量添加或修改画布内容，也可用 focus_node 让打开的浏览器聚焦指定节点。必须传 canvas_get_canvas 返回的 baseRevision 和稳定 requestId；不支持删除。',
+      '以 CAS 方式批量添加或修改画布内容。bind_references 只接收画布节点 ID，可把 1–9 个已有素材绑定到目标节点；也可用 focus_node 让打开的浏览器聚焦指定节点。必须传 canvas_get_canvas 返回的 baseRevision 和稳定 requestId；不支持删除。',
     inputSchema: z
       .object({
         canvasId: IdentifierSchema,
@@ -342,6 +384,24 @@ export const TOOL_DEFINITIONS = Object.freeze([
     scopes: ['artifacts:download'],
     call: (api, input) => api.prepareDownload(input),
   },
+  {
+    name: 'canvas_get_creative_capabilities',
+    title: '读取 SelfCanvas 创作助手能力',
+    description: '读取已配置的一键剧本、图片分镜、视频分析能力与模型及限制；不调用生成模型，不收费。先检查对应能力是否可用。',
+    inputSchema: z.object({}).strict(),
+    annotations: READ_ANNOTATIONS,
+    scopes: ['canvas:read'],
+    call: (api) => api.getCreativeCapabilities(),
+  },
+  {
+    name: 'canvas_create_creative_draft',
+    title: '生成 SelfCanvas 创作草稿',
+    description: '调用已配置网关生成剧本、分镜或视频分析草稿，可能收费，必须先获得用户对本次调用的确认并传 confirmed:true。视频分析只接受当前画布 sourceNodeId。仅返回候选稿，不创建或修改画布节点，也不生成图片或视频。保留 sourceRevision 供后续检查。重试须复用相同 requestId 和参数；超时或连接中断后结果不确定，禁止用新 ID 自动重跑。',
+    inputSchema: CreativeDraftInputSchema,
+    annotations: GENERATION_ANNOTATIONS,
+    scopes: ['generation:run'],
+    call: (api, input) => api.createCreativeDraft(input),
+  },
 ]);
 
 export function createSelfCanvasMcpServer(options = {}) {
@@ -351,7 +411,7 @@ export function createSelfCanvasMcpServer(options = {}) {
     { name: 'selfcanvas', version: SELF_CANVAS_MCP_VERSION },
     {
       instructions:
-        '先列出并读取画布，写操作必须使用最新 revision 和稳定 requestId；409 后重新读取，禁止盲目覆盖。生成和 AI 剪辑可能产生费用，遵循客户端确认策略。素材只用节点 ID 或 artifactId，不传本地路径、外部 URL 或密钥。任务完成前用 canvas_get_job 轮询；下载前先 canvas_list_artifacts。删除能力未开放。',
+        '先列出并读取画布，写操作必须使用最新 revision 和稳定 requestId；409 后重新读取，禁止盲目覆盖。生成和 AI 剪辑可能产生费用，遵循客户端确认策略。素材只用节点 ID 或 artifactId，不传本地路径、外部 URL 或密钥。任务完成前用 canvas_get_job 轮询；下载前先 canvas_list_artifacts。创作助手先读取能力；生成草稿需要用户确认与 confirmed:true，草稿不写画布、不运行媒体生成。创作请求超时须保留原 requestId，禁止换 ID 自动重试。用户接受草稿后再读取当前 revision 并用画布写操作导入。删除能力未开放。',
     },
   );
 

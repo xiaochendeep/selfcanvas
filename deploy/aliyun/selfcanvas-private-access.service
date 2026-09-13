@@ -1,0 +1,14 @@
+[Unit]
+Description=Restrict SelfCanvas and Sub2API ports to existing private tunnels
+After=network-pre.target
+Before=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=-/usr/sbin/nft delete table inet selfcanvas_private
+ExecStart=/usr/sbin/nft -f /etc/selfcanvas/private-access.nft
+ExecStop=/usr/sbin/nft delete table inet selfcanvas_private
+
+[Install]
+WantedBy=multi-user.target

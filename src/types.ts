@@ -122,6 +122,8 @@ export interface ProviderOptions {
   responseFormat?: string;
   resolution?: string;
   duration?: number;
+  /** Legacy AnyCap music duration; the editor migrates this value to seconds. */
+  musicDurationMs?: number;
   aspectRatio?: string;
   generateAudio?: boolean;
   fps?: number;
@@ -140,6 +142,12 @@ export interface ProviderOptions {
   loudnessRate?: number;
   enableSubtitle?: boolean;
   speakerIds?: string[];
+  lyrics?: string;
+  title?: string;
+  tags?: string;
+  makeInstrumental?: boolean;
+  customMode?: boolean;
+  vocalGender?: string;
   systemPrompt?: string;
   operation?: VideoOperation;
   transition?: VideoTransition;

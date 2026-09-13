@@ -118,6 +118,16 @@ function StoryboardPanel({ node }: { node: StudioNode }) {
   const [draft, setDraft] = useState<StoryboardDocument | null>(storyboard ?? null);
   const [fullscreen, setFullscreen] = useState(false);
   const [downloadOpen, setDownloadOpen] = useState(false);
+  const fullscreenRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    if (!fullscreen) return;
+    const previousFocus = document.activeElement;
+    fullscreenRef.current?.focus({ preventScroll: true });
+    return () => {
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus({ preventScroll: true });
+    };
+  }, [fullscreen]);
 
   useEffect(() => {
     if (!editing) setDraft(storyboard ?? null);
@@ -280,9 +290,24 @@ function StoryboardPanel({ node }: { node: StudioNode }) {
         {renderShots()}
       </div>
       {fullscreen && createPortal(
-        <div className="storyboard-fullscreen-backdrop" role="dialog" aria-modal="true">
-          <section className="storyboard-fullscreen-panel">
-            <header><div><Table2 size={20} /><strong>{node.data.title}</strong><span>{storyboard?.shotCount ?? 0} 镜</span></div><button type="button" onClick={() => setFullscreen(false)} aria-label="关闭全屏"><X size={20} /></button></header>
+        <div className="storyboard-fullscreen-backdrop nodrag nowheel" role="dialog" aria-modal="true" aria-label={`${node.data.title} · 分镜预览`}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+          onCopy={(event) => event.stopPropagation()}
+          onCut={(event) => event.stopPropagation()}
+          onPaste={(event) => event.stopPropagation()}
+          onWheel={(event) => event.stopPropagation()}
+          onKeyDown={(event) => {
+            event.stopPropagation();
+            if (event.key === 'Escape') { event.preventDefault(); setFullscreen(false); return; }
+            if (event.key !== 'Tab') return;
+            const fields = Array.from(fullscreenRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled)') ?? []).filter((element) => element.getClientRects().length);
+            const first = fields[0]; const last = fields[fields.length - 1];
+            if (event.shiftKey && (document.activeElement === first || document.activeElement === fullscreenRef.current)) { event.preventDefault(); last?.focus(); }
+            else if (!event.shiftKey && (document.activeElement === last || document.activeElement === fullscreenRef.current)) { event.preventDefault(); first?.focus(); }
+          }}>
+          <section className="storyboard-fullscreen-panel" ref={fullscreenRef} tabIndex={-1}>
+            <header><div><Table2 size={20} /><strong title={node.data.title}>{node.data.title}</strong><span>{storyboard?.shotCount ?? 0} 镜</span></div><button type="button" onClick={() => setFullscreen(false)} aria-label="关闭全屏"><X size={20} /></button></header>
             <div className="storyboard-fullscreen-body">{renderShots(true)}</div>
           </section>
         </div>,
@@ -331,6 +356,7 @@ function VideoOutputPreview({ label, src, downloadUrl }: { label: string; src: s
   const [duration, setDuration] = useState(0);
   const [muted, setMuted] = useState(true);
   const [volume, setVolume] = useState(1);
+  const [playbackError, setPlaybackError] = useState('');
 
   useEffect(() => {
     setPaused(true);
@@ -338,6 +364,7 @@ function VideoOutputPreview({ label, src, downloadUrl }: { label: string; src: s
     setDuration(0);
     setMuted(true);
     setVolume(1);
+    setPlaybackError('');
   }, [src]);
 
   const syncPlaybackState = () => {
@@ -352,7 +379,8 @@ function VideoOutputPreview({ label, src, downloadUrl }: { label: string; src: s
     const video = videoRef.current;
     if (!video) return;
     if (video.paused) {
-      void video.play().catch(() => setPaused(true));
+      setPlaybackError('');
+      void video.play().catch(() => { setPaused(true); setPlaybackError('视频暂时无法播放，请检查文件或连接后重试。'); });
     } else {
       video.pause();
     }
@@ -383,6 +411,7 @@ function VideoOutputPreview({ label, src, downloadUrl }: { label: string; src: s
         onPlay={syncPlaybackState}
         onPause={syncPlaybackState}
         onEnded={syncPlaybackState}
+        onError={() => { setPaused(true); setPlaybackError('视频加载失败，文件可能不可用或编码不受支持。'); }}
         onVolumeChange={() => {
           const video = videoRef.current;
           if (!video) return;
@@ -392,6 +421,7 @@ function VideoOutputPreview({ label, src, downloadUrl }: { label: string; src: s
       />
       <span className="video-result-label">{label}</span>
       <MediaDownloadButton url={downloadUrl || src} />
+      {playbackError && <div className="video-playback-error" role="status">{playbackError}</div>}
       <div className="video-controls nodrag nowheel" role="group" aria-label="视频播放控制">
         <button
           className="video-control-button"
@@ -409,12 +439,13 @@ function VideoOutputPreview({ label, src, downloadUrl }: { label: string; src: s
           max={duration > 0 ? duration : 0.01}
           step="0.01"
           value={Math.min(currentTime, duration > 0 ? duration : 0)}
+          disabled={duration <= 0}
           aria-label="视频进度"
           aria-valuetext={`${formatMediaTime(currentTime)} / ${formatMediaTime(duration)}`}
           style={{ '--video-range-progress': `${progress}%` } as CSSProperties}
           onChange={(event) => {
             const video = videoRef.current;
-            if (!video) return;
+            if (!video || duration <= 0) return;
             const nextTime = Number(event.currentTarget.value);
             video.currentTime = nextTime;
             setCurrentTime(nextTime);
@@ -530,6 +561,7 @@ function OutputPreview({ node }: { node: StudioNode }) {
         <Music size={20} />
         <span>{outputs.text ?? '音频结果已生成'}</span>
         <audio className="nodrag nowheel" src={outputs.audioUrl} controls />
+        <MediaDownloadButton url={outputs.fileUrl || outputs.audioUrl} />
       </div>
     );
   }

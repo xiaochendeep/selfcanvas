@@ -10,6 +10,8 @@ import {
   LayoutGrid,
   Mic2,
   Music,
+  RefreshCw,
+  Search,
   Send,
   Settings2,
   Sparkles,
@@ -22,6 +24,7 @@ import {
 import {
   useEffect,
   useLayoutEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -31,6 +34,8 @@ import {
 } from 'react';
 import { useCanvasStore } from '../store/canvasStore';
 import { useSettingsStore } from '../store/settingsStore';
+import { capabilityForVideoMode, catalogModelHint, catalogModels, catalogSyncLabel, musicDurationSeconds, musicTagsFromLegacyOptions, normalizeDoubaoParameters, parameterStrings, referenceLimitsForParameters, verifiedAnyCapCatalog, type AnyCapCatalog, type AnyCapParameters } from '../services/anycapCatalog';
+import { fetchAnyCapCatalog } from '../services/anycapCatalogClient';
 import type { NodeKind, NodeReference, PromptMention, ProviderOptions, StudioNode } from '../types';
 import {
   nodeToReference,
@@ -65,7 +70,7 @@ interface PromptSelectionDrag {
   anchorIndex: number;
 }
 
-type ComposerPositionStyle = CSSProperties & { '--composer-prompt-height'?: string };
+type ComposerPositionStyle = CSSProperties & { '--composer-prompt-height'?: string; '--composer-popover-max-height'?: string };
 
 function clampNumber(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
@@ -164,7 +169,22 @@ function ComposerSelect({
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const selected = options.find((option) => option.value === value) ?? options[0];
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const [inlineMenu, setInlineMenu] = useState(false);
+  const menuId = useId();
+  const selected = options.find((option) => option.value === value);
+  const selectedLabel = selected?.label ?? (value ? `未支持：${value}` : '请选择');
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    // Scrollable settings forms must expand their own scroll area; an absolute
+    // menu here is clipped by the popup's overflow container.
+    setInlineMenu(Boolean(rootRef.current?.closest('.media-options-popover')));
+    const items = rootRef.current?.querySelectorAll<HTMLButtonElement>('[role="option"]');
+    const index = Math.max(0, options.findIndex((option) => option.value === value));
+    items?.[index]?.focus({ preventScroll: true });
+    items?.[index]?.scrollIntoView({ block: 'nearest' });
+  }, [open]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -173,7 +193,7 @@ function ComposerSelect({
       setOpen(false);
     };
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false);
+      if (event.key === 'Escape') { setOpen(false); triggerRef.current?.focus(); }
     };
     window.addEventListener('pointerdown', closeOnOutside, true);
     window.addEventListener('keydown', closeOnEscape);
@@ -187,18 +207,34 @@ function ComposerSelect({
     <div className="composer-select" ref={rootRef}>
       <button
         className={`composer-select-trigger ${open ? 'is-open' : ''}`}
+        ref={triggerRef}
         type="button"
-        disabled={disabled}
+        disabled={disabled || options.length === 0}
         aria-expanded={open}
         aria-haspopup="listbox"
+        aria-controls={open ? menuId : undefined}
         aria-label={ariaLabel}
+        title={`${ariaLabel}：${selectedLabel}`}
+        onKeyDown={(event) => {
+          if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setOpen(true); }
+        }}
         onClick={() => setOpen((current) => !current)}
       >
-        <span>{selected?.label ?? value}</span>
+        <span>{selectedLabel}</span>
         <ChevronDown size={15} />
       </button>
       {open && !disabled && (
-        <div className="composer-select-menu" role="listbox" aria-label={ariaLabel}>
+        <div className="composer-select-menu" id={menuId} role="listbox" aria-label={ariaLabel}
+          style={inlineMenu ? { position: 'static', minWidth: 0, width: '100%', maxHeight: 210, overflowY: 'auto', marginTop: 6 } : { maxHeight: 'min(300px, var(--composer-popover-max-height, 300px))', overflowY: 'auto' }}
+          onKeyDown={(event) => {
+            const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="option"]')];
+            const index = items.indexOf(document.activeElement as HTMLButtonElement);
+            if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+              event.preventDefault();
+              const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+              items[next]?.focus();
+            } else if (event.key === 'Tab') setOpen(false);
+          }}>
           {options.map((option) => (
             <button
               className={option.value === value ? 'is-selected' : ''}
@@ -209,6 +245,7 @@ function ComposerSelect({
               onClick={() => {
                 onChange(option.value);
                 setOpen(false);
+                triggerRef.current?.focus();
               }}
             >
               <span>{option.label}</span>
@@ -258,6 +295,8 @@ const providerTools: ProviderTool[] = [
         { id: 'seedream-4.5', label: 'Seedream 4.5', hint: '稳定图片编辑 / 风格转换' },
       ],
       video: [
+        { id: 'seedance-2.5', label: 'Seedance 2.5', hint: '5–30 秒 · 多参考 / 首尾帧' },
+        { id: 'minimax-h3', label: 'MiniMax H3', hint: '2K · 5–15 秒 · 多参考' },
         { id: 'seedance-2-fast', label: 'Seedance 2.0 Fast', hint: '9图/3视频/3音频' },
         { id: 'seedance-2', label: 'Seedance 2.0', hint: '最高 4K 多参考' },
         { id: 'seedance-1.5-pro', label: 'Seedance 1.5 Pro', hint: '9 图参考' },
@@ -275,7 +314,7 @@ const providerTools: ProviderTool[] = [
         { id: 'elevanlabs-music', label: 'ElevenLabs Music', hint: '文本生成音乐' },
         { id: 'mureka-v8', label: 'Mureka V8', hint: '歌曲生成' },
         { id: 'suno-v5', label: 'Suno V5', hint: '音乐创作' },
-        { id: 'suno-v5-5', label: 'Suno V5.5', hint: '高质量音乐' },
+        { id: 'suno-v5.5', label: 'Suno V5.5', hint: '高质量音乐' },
       ],
     },
   },
@@ -350,10 +389,14 @@ const providerTools: ProviderTool[] = [
   },
 ];
 
-function toolsForKind(kind: NodeKind) {
-  const tools = providerTools.filter((tool) => (tool.models[kind] ?? []).length > 0);
+function toolsForKind(kind: NodeKind, catalog?: AnyCapCatalog | null) {
+  const discovered = catalogModels(catalog, kind);
+  const tools = providerTools.map((tool) => tool.id === 'anycap' && discovered !== null ? {
+    ...tool,
+    models: { ...tool.models, [kind]: discovered.map((item) => ({ id: item.id, label: item.label, hint: catalogModelHint(catalog, kind, item.id) || item.description })) },
+  } : tool).filter((tool) => (tool.models[kind] ?? []).length > 0 || (tool.id === 'anycap' && ['image', 'video', 'audio'].includes(kind)));
   if (kind !== 'audio') return tools;
-  const order = ['xiaomi-audio', 'runninghub', 'anycap'];
+  const order = ['anycap', 'xiaomi-audio', 'runninghub'];
   return [...tools].sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
 }
 
@@ -378,6 +421,7 @@ function toolDescriptionForKind(tool: ProviderTool | undefined, kind: NodeKind) 
 
 function defaultModelForKind(kind: NodeKind, model: string) {
   if (kind === 'audio' && model === 'anycap-audio') return 'elevanlabs-music';
+  if (kind === 'audio' && model === 'suno-v5-5') return 'suno-v5.5';
   if (model && !model.startsWith('mock-') && !model.startsWith('local-')) return model;
   if (kind === 'text') return 'gpt-4o-mini';
   if (kind === 'image') return 'gpt-image-2';
@@ -484,11 +528,6 @@ function doubaoAudioReferenceLimits(mode: string) {
   return { image: 0, video: 0, audio: 0 };
 }
 
-function clampInteger(value: unknown, minimum: number, maximum: number, fallback = 0) {
-  const parsed = Math.round(Number(value));
-  return Math.max(minimum, Math.min(maximum, Number.isFinite(parsed) ? parsed : fallback));
-}
-
 function range(start: number, end: number) {
   return Array.from({ length: end - start + 1 }, (_, index) => start + index);
 }
@@ -503,6 +542,9 @@ function closestOption(options: number[], value: unknown, fallback: number) {
 function canonicalVideoModelId(model: string) {
   const original = String(model || '').trim();
   const aliases: Record<string, string> = {
+    seedance25: 'seedance-2.5',
+    minimaxh3: 'minimax-h3',
+    h3: 'minimax-h3',
     seedance2: 'seedance-2',
     seedance20: 'seedance-2',
     seedance2pro: 'seedance-2',
@@ -534,6 +576,8 @@ interface VideoReferenceCapability {
   modes: string[];
   supportsMultiShot: boolean;
   supportsGenerateAudio?: boolean;
+  supportsGenerateAudioByMode?: Record<string, boolean>;
+  aspectRatiosByMode?: Record<string, string[]>;
   resolutions: string[];
   durations: number[];
   aspectRatios: string[];
@@ -546,6 +590,43 @@ const noMediaLimits = { image: 0, video: 0, audio: 0 };
 const seedanceRatios = ['16:9', '3:4', '21:9', '9:16', '4:3', '1:1'];
 
 const videoModelCapabilities: Record<string, VideoReferenceCapability> = {
+  'seedance-2.5': {
+    id: 'seedance-2.5',
+    defaultMode: 'multi-modal-reference',
+    modes: ['multi-modal-reference', 'image-to-video', 'text-to-video', 'first-last-frame-to-video'],
+    supportsMultiShot: false,
+    supportsGenerateAudio: true,
+    resolutions: ['480p', '720p', '1080p'],
+    durations: range(5, 30),
+    defaultDuration: 6,
+    aspectRatios: ['3:4', '21:9', '9:16', '16:9', '4:3', '1:1'],
+    referenceLimits: { image: 9, video: 3, audio: 3 },
+    referenceLimitsByMode: {
+      'text-to-video': noMediaLimits,
+      'image-to-video': { image: 9, video: 3, audio: 0 },
+      'first-last-frame-to-video': { image: 2, video: 0, audio: 0 },
+      'multi-modal-reference': { image: 9, video: 3, audio: 3 },
+    },
+  },
+  'minimax-h3': {
+    id: 'minimax-h3',
+    defaultMode: 'multi-modal-reference',
+    modes: ['multi-modal-reference', 'image-to-video', 'text-to-video'],
+    supportsMultiShot: false,
+    supportsGenerateAudio: false,
+    supportsGenerateAudioByMode: { 'text-to-video': false, 'image-to-video': true, 'multi-modal-reference': false },
+    resolutions: ['2k'],
+    durations: range(5, 15),
+    defaultDuration: 6,
+    aspectRatios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'],
+    aspectRatiosByMode: { 'text-to-video': ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'], 'multi-modal-reference': ['adaptive', '21:9', '16:9', '4:3', '1:1', '3:4', '9:16'] },
+    referenceLimits: { image: 9, video: 3, audio: 3 },
+    referenceLimitsByMode: {
+      'text-to-video': noMediaLimits,
+      'image-to-video': { image: 9, video: 0, audio: 0 },
+      'multi-modal-reference': { image: 9, video: 3, audio: 3 },
+    },
+  },
   'seedance-2-fast': {
     id: 'seedance-2-fast',
     defaultMode: 'multi-modal-reference',
@@ -715,19 +796,27 @@ const defaultVideoCapability: VideoReferenceCapability = {
   referenceLimitsByMode: { 'text-to-video': noMediaLimits, 'image-to-video': { image: 1, video: 0, audio: 0 } },
 };
 
-function videoCapability(model: string): VideoReferenceCapability {
-  return videoModelCapabilities[canonicalVideoModelId(model)] ?? defaultVideoCapability;
+function resolveVideoCapability(model: string, catalog?: AnyCapCatalog | null, mode?: string): VideoReferenceCapability {
+  const id = canonicalVideoModelId(model);
+  if (id === 'selfcanvas-smart-edit') return {
+    ...defaultVideoCapability, id, defaultMode: 'concat', modes: ['concat', 'ai-edit'],
+    resolutions: ['720p', '1080p', '4k'], durations: [],
+    aspectRatios: ['adaptive', '16:9', '9:16', '1:1', '4:3', '3:4'],
+    referenceLimits: { image: 0, video: 20, audio: 0 }, referenceLimitsByMode: undefined,
+  };
+  const capability = catalog?.videoCapabilities?.[id] ?? videoModelCapabilities[id] ?? defaultVideoCapability;
+  return capabilityForVideoMode(capability, mode);
 }
 
-function videoReferenceLimits(model: string, mode?: string, operation?: string) {
+function videoReferenceLimits(model: string, mode?: string, operation?: string, catalog?: AnyCapCatalog | null) {
   if (operation === 'ai-edit' || operation === 'concat') return { image: 0, video: 20, audio: 0 };
   if (operation === 'creative-edit') return { image: 0, video: 3, audio: 0 };
-  const capability = videoCapability(model);
+  const capability = resolveVideoCapability(model, catalog, mode);
   const normalizedMode = mode && capability.modes.includes(mode) ? mode : capability.defaultMode;
   return capability.referenceLimitsByMode?.[normalizedMode] ?? capability.referenceLimits;
 }
 
-function normalizeOptionsForModel(kind: NodeKind, model: string, options: ProviderOptions): ProviderOptions {
+function normalizeModelOptions(kind: NodeKind, model: string, options: ProviderOptions, catalog?: AnyCapCatalog | null): ProviderOptions {
   if (kind === 'storyboard') {
     return {
       ...options,
@@ -737,32 +826,69 @@ function normalizeOptionsForModel(kind: NodeKind, model: string, options: Provid
     };
   }
   if (kind === 'audio') {
-    if (!isDoubaoAudioModel(model)) return { ...options, model };
+    if (model === 'suno-v5-5') model = 'suno-v5.5';
+    const capability = options.providerTool === 'anycap' ? catalog?.audioCapabilities?.[model] : undefined;
+    const requestedAudioMode = String(options.mode ?? '');
+    const audioMode = capability?.modes.includes(requestedAudioMode) ? requestedAudioMode : capability?.defaultMode;
+    if (!isDoubaoAudioModel(model)) {
+      if (!capability || !audioMode) return { ...options, model };
+      const parameters = capability.parametersByMode?.[audioMode] ?? {};
+      const next: ProviderOptions = { ...options, model, mode: audioMode };
+      delete next.voiceMode;
+      delete next.voiceReference;
+      delete next.targetVoice;
+      delete next.sampleRate;
+      delete next.speakerIds;
+      delete next.speechRate;
+      delete next.pitchRate;
+      delete next.loudnessRate;
+      delete next.enableSubtitle;
+      delete next.format;
+      delete next.style;
+      if (parameters.duration) next.duration = musicDurationSeconds(options, parameters.duration);
+      else delete next.duration;
+      delete next.musicDurationMs;
+      if (!parameters.lyrics) delete next.lyrics;
+      if (parameters.tags) next.tags = musicTagsFromLegacyOptions(options);
+      else delete next.tags;
+      if (!parameters.title) delete next.title;
+      if (!parameters.make_instrumental) delete next.makeInstrumental;
+      if (!parameters.custom_mode) delete next.customMode;
+      if (!parameters.vocal_gender) delete next.vocalGender;
+      return next;
+    }
     const requestedMode = String(options.mode ?? '');
-    const mode = doubaoAudioModes.includes(requestedMode as (typeof doubaoAudioModes)[number])
+    const mode = audioMode || (doubaoAudioModes.includes(requestedMode as (typeof doubaoAudioModes)[number])
       ? requestedMode
-      : 'text-to-audio';
-    const requestedFormat = String(options.format ?? 'mp3').toLowerCase();
-    const requestedSampleRate = Number(options.sampleRate ?? 24000);
-    const sampleRate = doubaoAudioSampleRates.includes(requestedSampleRate)
-      ? requestedSampleRate
-      : 24000;
-    const speakerIds = Array.isArray(options.speakerIds)
-      ? options.speakerIds.map((item) => String(item).trim()).filter(Boolean).slice(0, 1)
-      : [];
+      : 'text-to-audio');
+    const parameters = capability?.parametersByMode?.[mode]
+      ?? verifiedAnyCapCatalog.audioCapabilities![DOUBAO_AUDIO_MODEL].parametersByMode![mode];
     return {
-      ...options,
+      ...normalizeDoubaoParameters(options, parameters),
       providerTool: 'anycap',
       model: DOUBAO_AUDIO_MODEL,
       mode,
-      format: requestedFormat === 'wav' ? 'wav' : 'mp3',
-      sampleRate,
-      speechRate: clampInteger(options.speechRate, -50, 100),
-      pitchRate: clampInteger(options.pitchRate, -12, 12),
-      loudnessRate: clampInteger(options.loudnessRate, -50, 100),
-      enableSubtitle: options.enableSubtitle === true,
-      speakerIds: mode === 'text-to-audio' ? speakerIds : [],
     };
+  }
+  if (kind === 'image' && options.providerTool === 'anycap') {
+    const capability = catalog?.imageCapabilities?.[model];
+    if (!capability) return options;
+    const mode = capability.modes.includes(String(options.mode ?? '')) ? String(options.mode) : capability.defaultMode;
+    const parameters = capability.parametersByMode?.[mode] ?? {};
+    const next: ProviderOptions = { ...options, model, mode };
+    // The current AnyCap image runner returns exactly one output per request.
+    next.count = 1;
+    const resolutions = parameterStrings(parameters.resolution);
+    const ratios = parameterStrings(parameters.aspect_ratio);
+    if (resolutions.length) next.resolutionTier = resolutions.find((resolution) => resolution.toLowerCase() === String(options.resolutionTier).toLowerCase()) ?? resolutions[0];
+    else delete next.resolutionTier;
+    if (ratios.length) next.aspectRatio = ratios.includes(String(options.aspectRatio)) ? String(options.aspectRatio) : ratios.includes('1:1') ? '1:1' : ratios[0];
+    else delete next.aspectRatio;
+    if (!parameters.size) delete next.size;
+    const formats = parameterStrings(parameters.format);
+    if (formats.length) next.outputFormat = formats.includes(String(options.outputFormat)) ? options.outputFormat : formats[0];
+    else delete next.outputFormat;
+    return next;
   }
   if (kind !== 'video') return options;
   const operation = String(options.operation ?? 'generate');
@@ -788,7 +914,7 @@ function normalizeOptionsForModel(kind: NodeKind, model: string, options: Provid
     options = { ...options, providerTool: 'anycap', model, mode: 'edit-video', operation };
   }
   const canonicalModel = canonicalVideoModelId(model);
-  const capability = videoCapability(canonicalModel);
+  const capability = resolveVideoCapability(canonicalModel, catalog, String(options.mode ?? ''));
   const requestedMode = String(options.mode ?? '');
   const mode = capability.modes.includes(requestedMode) ? requestedMode : capability.defaultMode;
   const nextOptions: ProviderOptions = {
@@ -798,6 +924,7 @@ function normalizeOptionsForModel(kind: NodeKind, model: string, options: Provid
     multiShot: mode === 'multi-shot-video',
     duration: closestOption(capability.durations, options.duration, capability.defaultDuration),
   };
+  if (!capability.durations.length) delete nextOptions.duration;
   if (capability.resolutions.length) {
     const resolution = String(options.resolution ?? '');
     nextOptions.resolution = capability.resolutions.includes(resolution) ? resolution : capability.resolutions[0];
@@ -805,10 +932,11 @@ function normalizeOptionsForModel(kind: NodeKind, model: string, options: Provid
     delete nextOptions.resolution;
   }
   const aspectRatio = String(options.aspectRatio ?? 'adaptive');
-  nextOptions.aspectRatio =
-    aspectRatio === 'adaptive' || capability.aspectRatios.includes(aspectRatio)
-      ? aspectRatio
-      : 'adaptive';
+  const strictRatios = !!catalog?.videoCapabilities?.[canonicalModel]?.parametersByMode;
+  if (capability.aspectRatios.length) {
+    nextOptions.aspectRatio = capability.aspectRatios.includes(aspectRatio) || (!strictRatios && aspectRatio === 'adaptive')
+      ? aspectRatio : capability.aspectRatios.includes('16:9') ? '16:9' : capability.aspectRatios[0];
+  } else delete nextOptions.aspectRatio;
   if (mode === 'multi-shot-video') {
     nextOptions.shotCount = Math.max(1, Math.min(12, Number(options.shotCount ?? 3)));
   } else {
@@ -832,10 +960,12 @@ function referenceCounts(references: NodeReference[]) {
   );
 }
 
-function referenceLimitMessage(kind: NodeKind, model: string, references: NodeReference[], mode?: string, operation?: string) {
+function resolveReferenceLimitMessage(kind: NodeKind, model: string, references: NodeReference[], mode?: string, operation?: string, catalog?: AnyCapCatalog | null) {
+  const mediaCapability = kind === 'audio' ? catalog?.audioCapabilities?.[model] : kind === 'image' ? catalog?.imageCapabilities?.[model] : undefined;
+  const parameters = mediaCapability?.parametersByMode?.[mode || mediaCapability.defaultMode];
   const limits = kind === 'video'
-    ? videoReferenceLimits(model, mode, operation)
-    : kind === 'audio' && isDoubaoAudioModel(model)
+    ? videoReferenceLimits(model, mode, operation, catalog)
+    : parameters ? referenceLimitsForParameters(parameters) : kind === 'audio' && isDoubaoAudioModel(model)
       ? doubaoAudioReferenceLimits(String(mode ?? 'text-to-audio'))
       : null;
   if (!limits) return '';
@@ -857,10 +987,16 @@ function referenceLimitMessage(kind: NodeKind, model: string, references: NodeRe
   return '';
 }
 
-function compatibleOutputs(kind: NodeKind, model = '', mode = '', operation = ''): Set<NodeReference['outputType']> {
+function resolveCompatibleOutputs(kind: NodeKind, model = '', mode = '', operation = '', catalog?: AnyCapCatalog | null): Set<NodeReference['outputType']> {
+  const mediaCapability = kind === 'audio' ? catalog?.audioCapabilities?.[model] : kind === 'image' ? catalog?.imageCapabilities?.[model] : undefined;
+  const parameters = mediaCapability?.parametersByMode?.[mode || mediaCapability.defaultMode];
+  if (parameters) {
+    const limits = referenceLimitsForParameters(parameters);
+    return new Set<NodeReference['outputType']>(['text', ...(['image', 'video', 'audio'] as const).filter((type) => limits[type] > 0)]);
+  }
   if (kind === 'image') return new Set<NodeReference['outputType']>(['image', 'text']);
   if (kind === 'video') {
-    const limits = videoReferenceLimits(model, mode, operation);
+    const limits = videoReferenceLimits(model, mode, operation, catalog);
     if (operation === 'ai-edit' || operation === 'concat' || operation === 'creative-edit') {
       return new Set<NodeReference['outputType']>(['video']);
     }
@@ -1300,9 +1436,9 @@ const videoRatioOptions: RatioOption[] = [
 
 const ratioOptionById = new Map([...imageRatioOptions, ...videoRatioOptions].map((option) => [option.id, option]));
 
-function ratioOptionsForVideo(model: string) {
-  const capability = videoCapability(model);
-  const ids = ['adaptive', ...capability.aspectRatios];
+function ratioOptionsForVideo(model: string, catalog?: AnyCapCatalog | null, mode?: string) {
+  const capability = resolveVideoCapability(model, catalog, mode);
+  const ids = catalog?.videoCapabilities?.[canonicalVideoModelId(model)]?.parametersByMode ? capability.aspectRatios : ['adaptive', ...capability.aspectRatios];
   return ids
     .filter((id, index, list) => list.indexOf(id) === index)
     .map((id) => ratioOptionById.get(id) ?? { id, label: id, iconWidth: 30, iconHeight: 22 });
@@ -1310,7 +1446,7 @@ function ratioOptionsForVideo(model: string) {
 
 function imageResolutionTier(options: ProviderOptions) {
   const explicit = String(options.resolutionTier || '');
-  if (imageResolutionOptions.includes(explicit)) return explicit;
+  if (explicit && (options.providerTool === 'anycap' || imageResolutionOptions.includes(explicit))) return explicit;
   const size = String(options.size || '');
   if (size.includes('4096') || size.includes('4K')) return '4K';
   if (size.includes('2048') || size.includes('2K')) return '2K';
@@ -1449,6 +1585,12 @@ export function GenerationComposer() {
   const [mentionOpen, setMentionOpen] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [modelMenuToolId, setModelMenuToolId] = useState('');
+  const [modelQuery, setModelQuery] = useState('');
+  const [anycapCatalog, setAnycapCatalog] = useState<AnyCapCatalog>(verifiedAnyCapCatalog);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState('');
+  const catalogRequestRef = useRef(0);
+  const anycapEndpoint = useSettingsStore((state) => state.providerDrafts.anycap.endpoint);
   const [optionPanelOpen, setOptionPanelOpen] = useState<OptionPanelId>(null);
   const [referenceWarning, setReferenceWarning] = useState('');
   const [draggedReferenceKey, setDraggedReferenceKey] = useState('');
@@ -1477,6 +1619,38 @@ export function GenerationComposer() {
     width: typeof window === 'undefined' ? 1440 : window.innerWidth,
     height: typeof window === 'undefined' ? 900 : window.innerHeight,
   }));
+
+  useEffect(() => {
+    const requestId = ++catalogRequestRef.current;
+    setAnycapCatalog(verifiedAnyCapCatalog);
+    setCatalogLoading(true);
+    setCatalogError('');
+    void fetchAnyCapCatalog(anycapEndpoint).then((catalog) => {
+      if (requestId === catalogRequestRef.current) setAnycapCatalog({ ...verifiedAnyCapCatalog, ...catalog });
+    }).catch((error: unknown) => {
+      if (requestId === catalogRequestRef.current) setCatalogError(error instanceof Error ? error.message : '模型同步失败');
+    }).finally(() => { if (requestId === catalogRequestRef.current) setCatalogLoading(false); });
+    return () => { catalogRequestRef.current += 1; };
+  }, [anycapEndpoint]);
+
+  const refreshCatalog = () => {
+    const requestId = ++catalogRequestRef.current;
+    setCatalogLoading(true);
+    setCatalogError('');
+    void fetchAnyCapCatalog(anycapEndpoint, true).then((catalog) => {
+      if (requestId === catalogRequestRef.current) setAnycapCatalog({ ...verifiedAnyCapCatalog, ...catalog });
+    }).catch((error: unknown) => {
+      if (requestId === catalogRequestRef.current) setCatalogError(error instanceof Error ? error.message : '模型同步失败');
+    }).finally(() => { if (requestId === catalogRequestRef.current) setCatalogLoading(false); });
+  };
+
+  const videoCapability = (model: string, mode?: string) => resolveVideoCapability(model, anycapCatalog, mode);
+  const normalizeOptionsForModel = (kind: NodeKind, model: string, options: ProviderOptions) =>
+    normalizeModelOptions(kind, model, options, anycapCatalog);
+  const compatibleOutputs = (kind: NodeKind, model = '', mode = '', operation = '') =>
+    resolveCompatibleOutputs(kind, model, mode, operation, kind === 'video' || selectedNode?.data.providerOptions?.providerTool === 'anycap' || selectedNode?.data.provider.startsWith('AnyCap') ? anycapCatalog : undefined);
+  const referenceLimitMessage = (kind: NodeKind, model: string, references: NodeReference[], mode?: string, operation?: string) =>
+    resolveReferenceLimitMessage(kind, model, references, mode, operation, kind === 'video' || selectedNode?.data.providerOptions?.providerTool === 'anycap' || selectedNode?.data.provider.startsWith('AnyCap') ? anycapCatalog : undefined);
 
   useEffect(() => {
     viewportRef.current = viewport;
@@ -1722,6 +1896,7 @@ export function GenerationComposer() {
   const mentionCandidates = useMemo(() => {
     if (!selectedNode) return [];
     const nodeOptions = { ...defaultOptions(selectedNode.data.kind, selectedNode.data.model), ...(selectedNode.data.providerOptions ?? {}) };
+    if (selectedNode.data.kind === 'image' && nodeOptions.providerTool === 'anycap' && !nodeOptions.mode && selectedNode.data.references?.some((reference) => reference.outputType === 'image')) nodeOptions.mode = 'image-to-image';
     const nodeModel = optionModel(nodeOptions, selectedNode);
     const compatible = compatibleOutputs(
       selectedNode.data.kind,
@@ -1746,7 +1921,7 @@ export function GenerationComposer() {
       .map(nodeToReference)
       .filter((reference) => compatible.has(reference.outputType))
       .sort((a, b) => a.title.localeCompare(b.title, 'zh-Hans-CN'));
-  }, [activeCanvas.edges, activeCanvas.groups, activeCanvas.nodes, selectedNode]);
+  }, [activeCanvas.edges, activeCanvas.groups, activeCanvas.nodes, selectedNode, anycapCatalog]);
 
   const selectedPrompt = selectedNode?.data.prompt ?? '';
   const selectedReferences = selectedNode?.data.references;
@@ -1760,13 +1935,14 @@ export function GenerationComposer() {
 
   const node = selectedNode;
   const rawOptions = { ...defaultOptions(node.data.kind, node.data.model), ...(node.data.providerOptions ?? {}) };
+  if (node.data.kind === 'image' && rawOptions.providerTool === 'anycap' && !rawOptions.mode && selectedReferences?.some((reference) => reference.outputType === 'image')) rawOptions.mode = 'image-to-image';
   const rawModel = optionModel(rawOptions, node);
   const options = normalizeOptionsForModel(node.data.kind, rawModel, rawOptions);
   const references = selectedReferences ?? [];
   const referenceMentions = mentionsFromPromptParts(promptParts);
   const running = node.data.status === 'running';
   const model = optionModel(options, node);
-  const availableTools = toolsForKind(node.data.kind);
+  const availableTools = toolsForKind(node.data.kind, anycapCatalog);
   const activeTool =
     availableTools.find((tool) => tool.id === options.providerTool) ||
     availableTools.find((tool) => tool.label === node.data.provider) ||
@@ -1776,6 +1952,17 @@ export function GenerationComposer() {
   const activeModel = activeModels.find((item) => item.id === model) ?? { id: model, label: model };
   const pickerTool = availableTools.find((tool) => tool.id === modelMenuToolId) ?? activeTool;
   const pickerModels = pickerTool?.models[node.data.kind] ?? [];
+  const visiblePickerModels = pickerModels.filter((item) =>
+    `${item.label} ${item.id} ${item.hint ?? ''}`.toLocaleLowerCase().includes(modelQuery.trim().toLocaleLowerCase()));
+  const currentModelUnlisted = activeTool?.id === 'anycap' && catalogModels(anycapCatalog, node.data.kind) !== null && !activeModels.some((item) => item.id === model);
+  const modelUnavailableForRun = currentModelUnlisted && !(node.data.kind === 'video' && ['ai-edit', 'concat'].includes(String(options.operation ?? 'generate')));
+  const imageCapability = activeTool?.id === 'anycap' && node.data.kind === 'image' ? anycapCatalog.imageCapabilities?.[model] : undefined;
+  const imageParameters = imageCapability?.parametersByMode?.[String(options.mode ?? imageCapability.defaultMode)];
+  const displayedImageResolutions = imageParameters ? parameterStrings(imageParameters.resolution) : imageResolutionOptions;
+  const displayedImageRatios = imageParameters ? parameterStrings(imageParameters.aspect_ratio).map((id) => ratioOptionById.get(id) ?? { id, label: id, iconWidth: 30, iconHeight: 22 }) : imageRatioOptions;
+  const audioCapability = activeTool?.id === 'anycap' && node.data.kind === 'audio' ? anycapCatalog.audioCapabilities?.[model] : undefined;
+  const audioParameters: AnyCapParameters = audioCapability?.parametersByMode?.[String(options.mode ?? audioCapability.defaultMode)]
+    ?? (isDoubaoAudioModel(model) ? verifiedAnyCapCatalog.audioCapabilities![DOUBAO_AUDIO_MODEL].parametersByMode![String(options.mode ?? 'text-to-audio')] : {}) ?? {};
   const positionStyle = composerBounds(
     node,
     viewport.zoom,
@@ -1792,6 +1979,7 @@ export function GenerationComposer() {
     : null;
   const composerStyle: ComposerPositionStyle = {
     ...positionStyle,
+    '--composer-popover-max-height': `${Math.max(160, Math.min(windowSize.height - 48, (composerRef.current?.querySelector('footer')?.getBoundingClientRect().top ?? Number(positionStyle.top) + 220) - 24))}px`,
     ...(displayedPromptHeight ? { '--composer-prompt-height': `${displayedPromptHeight}px` } : {}),
   };
 
@@ -1853,19 +2041,20 @@ export function GenerationComposer() {
     document.documentElement.classList.remove('is-composer-resizing');
     saveComposerLayouts(composerLayoutsRef.current);
   };
-  const videoReferenceCapability = node.data.kind === 'video' ? videoCapability(model) : null;
+  const videoReferenceCapability = node.data.kind === 'video' ? videoCapability(model, options.mode) : null;
   const activeVideoReferenceLimits: Partial<Record<NodeReference['outputType'], number>> =
     node.data.kind === 'video'
       ? videoReferenceLimits(
           model,
           String(options.mode ?? videoReferenceCapability?.defaultMode ?? ''),
           String(options.operation ?? 'generate'),
+          anycapCatalog,
         )
       : {};
   const videoReferenceCounts = node.data.kind === 'video' ? referenceCounts(references) : {};
   const doubaoAudio = node.data.kind === 'audio' && isDoubaoAudioModel(model);
   const activeAudioReferenceLimits = doubaoAudio
-    ? doubaoAudioReferenceLimits(String(options.mode ?? 'text-to-audio'))
+    ? audioCapability ? referenceLimitsForParameters(audioParameters) : doubaoAudioReferenceLimits(String(options.mode ?? 'text-to-audio'))
     : { image: 0, video: 0, audio: 0 };
   const audioReferenceCounts = node.data.kind === 'audio' ? referenceCounts(references) : {};
 
@@ -1975,12 +2164,14 @@ export function GenerationComposer() {
     const resolutionTier = imageResolutionTier(options);
     const aspectRatio = aspectRatioOf(options);
     return (
-      <div className="media-options-popover image-size-popover">
-        <div className="media-options-title">画质</div>
+      <div className="media-options-popover image-size-popover" role="dialog" aria-label="图片参数设置" style={{ maxHeight: 'var(--composer-popover-max-height)', overflowY: 'auto', maxWidth: 'calc(100vw - 32px)' }}>
+        {displayedImageResolutions.length > 0 && <div className="media-options-title">画质</div>}
         <div className="media-quality-row" role="listbox" aria-label="图片画质">
-          {imageResolutionOptions.map((tier) => (
+          {displayedImageResolutions.map((tier) => (
             <button
               className={tier === resolutionTier ? 'is-active' : ''}
+              role="option"
+              aria-selected={tier === resolutionTier}
               key={tier}
               type="button"
               onClick={() => applyImageMediaPreset({ resolutionTier: tier })}
@@ -1989,9 +2180,9 @@ export function GenerationComposer() {
             </button>
           ))}
         </div>
-        <div className="media-options-title">比例</div>
+        {displayedImageRatios.length > 0 && <div className="media-options-title">比例</div>}
         <div className="media-ratio-grid image-ratio-grid">
-          {imageRatioOptions.map((option) => renderRatioButton(option, option.id === aspectRatio, () => applyImageMediaPreset({ aspectRatio: option.id })))}
+          {displayedImageRatios.map((option) => renderRatioButton(option, option.id === aspectRatio, () => applyImageMediaPreset({ aspectRatio: option.id })))}
         </div>
       </div>
     );
@@ -2000,15 +2191,15 @@ export function GenerationComposer() {
   const renderVideoSettingsPanel = () => {
     const resolution = String(options.resolution ?? '720p');
     const aspectRatio = aspectRatioOf(options);
-    const capability = videoCapability(model);
-    const ratioOptions = ratioOptionsForVideo(model);
+    const capability = videoCapability(model, options.mode);
+    const ratioOptions = ratioOptionsForVideo(model, anycapCatalog, options.mode);
     const operation = String(options.operation ?? 'generate');
     const duration = String(options.duration ?? capability.defaultDuration);
     const showDuration = operation === 'generate' || operation === 'creative-edit';
     return (
-      <div className="media-options-popover video-settings-popover" role="dialog" aria-label="视频参数设置">
+      <div className="media-options-popover video-settings-popover" role="dialog" aria-label="视频参数设置" style={{ maxHeight: 'var(--composer-popover-max-height)', overflowY: 'auto' }}>
         <div className="video-settings-title">设置</div>
-        <label className="video-settings-control">
+        {ratioOptions.length > 0 && <label className="video-settings-control">
           <span>画面比例</span>
           <ComposerSelect
             ariaLabel="画面比例"
@@ -2016,7 +2207,7 @@ export function GenerationComposer() {
             options={ratioOptions.map((option) => ({ value: option.id, label: option.label }))}
             onChange={(nextAspectRatio) => applyVideoMediaPreset({ aspectRatio: nextAspectRatio })}
           />
-        </label>
+        </label>}
         {capability.resolutions.length > 0 && (
           <label className="video-settings-control">
             <span>分辨率</span>
@@ -2047,66 +2238,67 @@ export function GenerationComposer() {
   const renderAudioSettingsPanel = () => (
     <div className="media-options-popover audio-settings-popover" role="dialog" aria-label="豆包音频参数设置">
       <div className="video-settings-title">豆包音频设置</div>
-      <label className="video-settings-control">
+      {audioParameters.format && <label className="video-settings-control">
         <span>输出格式</span>
         <ComposerSelect
           ariaLabel="音频输出格式"
           value={String(options.format ?? 'mp3')}
-          options={[
-            { value: 'mp3', label: 'MP3' },
-            { value: 'wav', label: 'WAV' },
-          ]}
+          options={(audioParameters.format ? parameterStrings(audioParameters.format) : ['mp3', 'wav']).map((format) => ({ value: format, label: format.toUpperCase() }))}
           onChange={(format) => updateOptions({ format })}
         />
-      </label>
-      <label className="video-settings-control">
+      </label>}
+      {audioParameters.sample_rate && <label className="video-settings-control">
         <span>采样率</span>
         <ComposerSelect
           ariaLabel="音频采样率"
           value={String(options.sampleRate ?? 24000)}
-          options={doubaoAudioSampleRates.map((rate) => ({ value: String(rate), label: `${rate / 1000} kHz` }))}
+          options={(audioParameters.sample_rate?.enum?.map(Number) ?? doubaoAudioSampleRates).map((rate) => ({ value: String(rate), label: `${rate / 1000} kHz` }))}
           onChange={(sampleRate) => updateOptions({ sampleRate: Number(sampleRate) })}
         />
-      </label>
+      </label>}
       <div className="audio-parameter-grid">
-        <label>
+        {audioParameters.speech_rate && <label>
           <span>语速 <b>{Number(options.speechRate ?? 0)}</b></span>
           <input
-            min="-50"
-            max="100"
+            aria-label="语速"
+            min={audioParameters.speech_rate?.minimum ?? -50}
+            max={audioParameters.speech_rate?.maximum ?? 100}
             step="1"
             type="range"
             value={String(options.speechRate ?? 0)}
             onChange={(event) => updateOptions({ speechRate: Number(event.currentTarget.value) })}
           />
-        </label>
-        <label>
+        </label>}
+        {audioParameters.pitch_rate && <label>
           <span>音调 <b>{Number(options.pitchRate ?? 0)}</b></span>
           <input
-            min="-12"
-            max="12"
+            aria-label="音调"
+            min={audioParameters.pitch_rate?.minimum ?? -12}
+            max={audioParameters.pitch_rate?.maximum ?? 12}
             step="1"
             type="range"
             value={String(options.pitchRate ?? 0)}
             onChange={(event) => updateOptions({ pitchRate: Number(event.currentTarget.value) })}
           />
-        </label>
-        <label>
+        </label>}
+        {audioParameters.loudness_rate && <label>
           <span>响度 <b>{Number(options.loudnessRate ?? 0)}</b></span>
           <input
-            min="-50"
-            max="100"
+            aria-label="响度"
+            min={audioParameters.loudness_rate?.minimum ?? -50}
+            max={audioParameters.loudness_rate?.maximum ?? 100}
             step="1"
             type="range"
             value={String(options.loudnessRate ?? 0)}
             onChange={(event) => updateOptions({ loudnessRate: Number(event.currentTarget.value) })}
           />
-        </label>
+        </label>}
       </div>
-      {String(options.mode ?? 'text-to-audio') === 'text-to-audio' && (
+      {audioParameters.speaker_ids && (
         <label className="video-settings-control audio-speaker-field">
           <span>说话人 ID（可选，最多 1 个）</span>
           <input
+            aria-label="说话人 ID"
             type="text"
             value={String(options.speakerIds?.[0] ?? '')}
             placeholder="NexusHub speaker ID"
@@ -2114,7 +2306,7 @@ export function GenerationComposer() {
           />
         </label>
       )}
-      <button
+      {audioParameters.enable_subtitle && <button
         className={`audio-subtitle-toggle ${options.enableSubtitle === true ? 'is-active' : ''}`}
         type="button"
         aria-pressed={options.enableSubtitle === true}
@@ -2122,8 +2314,21 @@ export function GenerationComposer() {
       >
         <Check size={15} />
         <span>生成字幕</span>
-      </button>
+      </button>}
       <div className="media-options-note">参数范围来自 AnyCap 当前 Doubao Seed Audio 1.0 schema</div>
+    </div>
+  );
+
+  const renderMusicSettingsPanel = () => (
+    <div className="media-options-popover audio-settings-popover" role="dialog" aria-label="音乐参数设置">
+      <div className="video-settings-title">音乐设置</div>
+      {audioParameters.duration && <label className="video-settings-control"><span>时长（秒）</span><input type="number" min="1" step="1" value={String(options.duration ?? 30)} onChange={(event) => updateOptions({ duration: Number(event.currentTarget.value) })} /></label>}
+      {audioParameters.tags && <label className="video-settings-control"><span>风格标签</span><input placeholder="如：电影感、钢琴、舒缓" value={String(options.tags ?? '')} onChange={(event) => updateOptions({ tags: event.currentTarget.value })} /></label>}
+      {audioParameters.title && <label className="video-settings-control"><span>作品名称</span><input placeholder="为这段音乐命名" value={String(options.title ?? '')} onChange={(event) => updateOptions({ title: event.currentTarget.value })} /></label>}
+      {audioParameters.make_instrumental && <button className={`audio-subtitle-toggle ${options.makeInstrumental ? 'is-active' : ''}`} type="button" aria-pressed={options.makeInstrumental === true} onClick={() => updateOptions({ makeInstrumental: !options.makeInstrumental })}><Check size={15} /><span>纯音乐，不含人声</span></button>}
+      {audioParameters.custom_mode && <button className={`audio-subtitle-toggle ${options.customMode ? 'is-active' : ''}`} type="button" aria-pressed={options.customMode === true} onClick={() => updateOptions({ customMode: !options.customMode })}><Check size={15} /><span>自定义歌词与风格</span></button>}
+      {options.customMode && audioParameters.lyrics && <label className="video-settings-control"><span>歌词</span><textarea rows={4} placeholder="在此填写歌词" value={String(options.lyrics ?? '')} onChange={(event) => updateOptions({ lyrics: event.currentTarget.value })} /></label>}
+      <div className="media-options-note">可选参数随模型更新，留空的选项由模型决定。</div>
     </div>
   );
 
@@ -2351,6 +2556,14 @@ export function GenerationComposer() {
   const handleRun = () => {
     const operation = String(options.operation ?? 'generate');
     const editOperation = node.data.kind === 'video' && operation !== 'generate';
+    if (modelUnavailableForRun) {
+      setReferenceWarning('当前模型不在可用目录中，请先刷新目录或选择其他模型。原节点配置已保留。');
+      return;
+    }
+    if (activeTool?.id === 'anycap' && node.data.kind === 'audio' && audioParameters.prompt?.maxLength && node.data.prompt.length > audioParameters.prompt.maxLength) {
+      setReferenceWarning(`当前音频模型提示词最多 ${audioParameters.prompt.maxLength} 个字符，当前为 ${node.data.prompt.length} 个。请缩短后重试。`);
+      return;
+    }
     const normalizedOptions = normalizeOptionsForModel(node.data.kind, model, {
       ...options,
       ...(node.data.kind === 'image' ? { referenceQuality: imageReferenceQuality } : {}),
@@ -2369,6 +2582,19 @@ export function GenerationComposer() {
     if (limitMessage) {
       setReferenceWarning(limitMessage);
       return;
+    }
+    if (activeTool?.id === 'anycap' && !editOperation) {
+      const capability = node.data.kind === 'video' ? anycapCatalog.videoCapabilities?.[canonicalVideoModelId(model)] : node.data.kind === 'image' ? imageCapability : audioCapability;
+      const mode = String(normalizedOptions.mode ?? capability?.defaultMode ?? '');
+      const minimums = capability?.modeOptions?.[mode]?.referenceMinimums;
+      const counts = referenceCounts(references);
+      for (const type of ['image', 'video', 'audio'] as const) {
+        const minimum = minimums?.[type] ?? 0;
+        if ((counts[type] ?? 0) < minimum) {
+          setReferenceWarning(mode === 'first-last-frame-to-video' ? '首尾帧模式需要 2 张图片，按首帧、尾帧顺序排列' : `当前模式至少需要 ${minimum} 个${{ image: '图片', video: '视频', audio: '音频' }[type]}参考`);
+          return;
+        }
+      }
     }
     if (node.data.kind === 'audio' && isDoubaoAudioModel(model)) {
       const mode = String(normalizedOptions.mode ?? 'text-to-audio');
@@ -2493,20 +2719,23 @@ export function GenerationComposer() {
       const aspectRatio = aspectRatioOf(options);
       return (
         <>
-          <div className="composer-option-wrap">
+          {imageCapability && <div className="composer-select-field"><ComposerSelect ariaLabel="图片生成模式" value={String(options.mode ?? imageCapability.defaultMode)} options={imageCapability.modes.map((mode) => ({ value: mode, label: mode === 'image-to-image' ? '参考图编辑' : mode === 'text-to-image' ? '文生图' : mode }))} onChange={(mode) => updateOptions({ mode })} /></div>}
+          {(displayedImageResolutions.length > 0 || displayedImageRatios.length > 0) && <div className="composer-option-wrap">
             <button
               className={`composer-option-pill ${optionPanelOpen === 'image-size' ? 'is-active' : ''}`}
               type="button"
               onClick={() => toggleOptionPanel('image-size')}
             >
               <LayoutGrid size={16} />
-              <span>{aspectRatioLabel(aspectRatio)} · {resolutionTier}</span>
+              <span>{[displayedImageRatios.length > 0 ? aspectRatioLabel(aspectRatio) : '', displayedImageResolutions.length > 0 ? resolutionTier : ''].filter(Boolean).join(' · ')}</span>
             </button>
             {optionPanelOpen === 'image-size' && renderImageSizePanel()}
-          </div>
+          </div>}
           <button
             className="composer-count-pill"
             type="button"
+            disabled={activeTool?.id === 'anycap'}
+            title={activeTool?.id === 'anycap' ? 'AnyCap 当前每次生成 1 张图片' : '切换生成数量'}
             onClick={() => updateOptions({ count: Number(options.count ?? 1) >= 4 ? 1 : Number(options.count ?? 1) + 1 })}
             aria-label="切换生成数量"
           >
@@ -2516,7 +2745,7 @@ export function GenerationComposer() {
       );
     }
     if (node.data.kind === 'video') {
-      const capability = videoCapability(model);
+      const capability = videoCapability(model, options.mode);
       const operation = String(options.operation ?? 'generate');
       const resolution = String(options.resolution ?? capability.resolutions[0] ?? '');
       const aspectRatio = aspectRatioOf(options);
@@ -2534,6 +2763,8 @@ export function GenerationComposer() {
         'image-to-video': '图生视频',
         'edit-video': '视频编辑',
         'video-to-video': '视频参考',
+        'first-last-frame-to-video': '首尾帧',
+        'motion-control': '动作控制',
       };
       return (
         <>
@@ -2550,7 +2781,7 @@ export function GenerationComposer() {
               onChange={setVideoOperation}
             />
           </div>
-          {(operation !== 'generate' || capability.resolutions.length > 0 || capability.aspectRatios.length > 0) && (
+          {(operation !== 'generate' || capability.resolutions.length > 0 || capability.aspectRatios.length > 0 || capability.durations.length > 0) && (
             <div className="composer-option-wrap">
               <button
                 className={`composer-option-pill video-settings-trigger ${optionPanelOpen === 'video-size' ? 'is-active' : ''}`}
@@ -2643,7 +2874,7 @@ export function GenerationComposer() {
             <ComposerSelect
               ariaLabel="豆包音频生成模式"
               value={mode}
-              options={doubaoAudioModes.map((item) => ({ value: item, label: doubaoAudioModeLabels[item] }))}
+              options={(audioCapability?.modes ?? [...doubaoAudioModes]).map((item) => ({ value: item, label: doubaoAudioModeLabels[item as keyof typeof doubaoAudioModeLabels] ?? item }))}
               onChange={(nextMode) => updateOptions({ mode: nextMode })}
             />
           </div>
@@ -2663,6 +2894,12 @@ export function GenerationComposer() {
           </div>
         </>
       );
+    }
+    if (audioCapability) {
+      return <>
+        <div className="composer-select-field audio-mode-field"><ComposerSelect ariaLabel="音乐生成模式" value={String(options.mode ?? audioCapability.defaultMode)} disabled={audioCapability.modes.length < 2} options={audioCapability.modes.map((mode) => ({ value: mode, label: mode === 'text-to-music' ? '音乐创作' : mode }))} onChange={(mode) => updateOptions({ mode })} /></div>
+        <div className="composer-option-wrap audio-option-wrap"><button className={`composer-option-pill audio-settings-trigger ${optionPanelOpen === 'audio-settings' ? 'is-active' : ''}`} type="button" onClick={() => toggleOptionPanel('audio-settings')} aria-expanded={optionPanelOpen === 'audio-settings'}><Settings2 size={16} /><span>{audioParameters.duration ? `${Number(options.duration ?? 30)}s` : '音乐设置'}{options.makeInstrumental ? ' · 纯音乐' : ''}</span><ChevronDown size={15} /></button>{optionPanelOpen === 'audio-settings' && renderMusicSettingsPanel()}</div>
+      </>;
     }
     return (
       <>
@@ -2711,7 +2948,7 @@ export function GenerationComposer() {
         >
           <AtSign size={18} />
         </button>
-        {node.data.kind === 'audio' && !doubaoAudio && (
+        {node.data.kind === 'audio' && !doubaoAudio && !audioCapability && (
           <>
             <button
               className={`voice-reference-chip ${references.some((reference) => reference.outputType === 'audio') ? 'is-active' : ''}`}
@@ -2743,10 +2980,11 @@ export function GenerationComposer() {
         {renderVideoReferenceCounters()}
         {references.map((reference) => {
           const Icon = iconByOutput[reference.outputType];
+          const frameReference = node.data.kind === 'video' && options.mode === 'first-last-frame-to-video' && reference.outputType === 'image';
           const draggable =
-            node.data.kind === 'video' &&
+            frameReference || (node.data.kind === 'video' &&
             String(options.operation ?? 'generate') !== 'generate' &&
-            reference.outputType === 'video';
+            reference.outputType === 'video');
           const key = referenceKey(reference);
           return (
             <div
@@ -2775,7 +3013,7 @@ export function GenerationComposer() {
             >
               {draggable && <GripVertical className="reference-chip-grip" size={13} />}
               {reference.thumbnailUrl ? <img src={reference.thumbnailUrl} alt="" /> : <Icon size={16} />}
-              <span>{reference.title}</span>
+              <span>{frameReference ? `${references.filter((item) => item.outputType === 'image').indexOf(reference) === 0 ? '首帧' : '尾帧'} · ` : ''}{reference.title}</span>
               <button
                 className="reference-chip-remove"
                 type="button"
@@ -2819,7 +3057,7 @@ export function GenerationComposer() {
         </div>
       )}
 
-      {referenceWarning && <div className="composer-reference-warning">{referenceWarning}</div>}
+      {(referenceWarning || modelUnavailableForRun) && <div className="composer-reference-warning" role="status">{referenceWarning || '当前模型不在可用目录中，请刷新目录或选择其他模型。原节点配置已保留。'}</div>}
 
       <div className="composer-prompt-field">
         <div
@@ -2841,7 +3079,7 @@ export function GenerationComposer() {
           className="nodrag nowheel nopan"
           ref={textareaRef}
           value={node.data.prompt}
-          placeholder={placeholderFor(node.data.kind)}
+          placeholder={node.data.kind === 'audio' && audioCapability && !audioCapability.modes.includes('text-to-audio') ? '描述音乐风格、情绪或歌词，Enter 生成音乐' : placeholderFor(node.data.kind)}
           onChange={(event) => {
             const nextPrompt = event.currentTarget.value;
             const caretIndex = event.currentTarget.selectionStart ?? nextPrompt.length;
@@ -2909,6 +3147,7 @@ export function GenerationComposer() {
             type="button"
             onClick={() => {
               setModelMenuToolId(activeTool?.id ?? '');
+              setModelQuery('');
               setOptionPanelOpen(null);
               mentionTriggerIndexRef.current = null;
               setMentionOpen(false);
@@ -2931,7 +3170,7 @@ export function GenerationComposer() {
                     className={`${tool.id === pickerTool?.id ? 'is-active' : ''} tool-${tool.id}`}
                     key={tool.id}
                     type="button"
-                    onClick={() => setModelMenuToolId(tool.id)}
+                    onClick={() => { setModelMenuToolId(tool.id); setModelQuery(''); }}
                   >
                     <span className={`model-badge badge-${tool.id}`}>{tool.badge}</span>
                     <strong>{toolLabelForKind(tool, node.data.kind)}</strong>
@@ -2941,8 +3180,15 @@ export function GenerationComposer() {
                 ))}
               </div>
               <div className="model-choice-list">
-                <div className="model-choice-title">{toolLabelForKind(pickerTool, node.data.kind) || '模型'}</div>
-                {(pickerModels.length ? pickerModels : [{ id: model, label: model }]).map((item) => (
+                <div className="model-picker-toolbar">
+                  <div className="model-choice-title">{toolLabelForKind(pickerTool, node.data.kind) || '模型'} <span>{pickerModels.length}</span></div>
+                  {pickerTool?.id === 'anycap' && <button type="button" disabled={catalogLoading} onClick={refreshCatalog} aria-label="刷新 AnyCap 模型" title="同步 AnyCap 模型"><RefreshCw size={15} /></button>}
+                </div>
+                <label className="model-picker-search"><Search size={15} /><input aria-label="搜索模型" placeholder="搜索模型名称" value={modelQuery} onChange={(event) => setModelQuery(event.currentTarget.value)} /></label>
+                {pickerTool?.id === 'anycap' && <div className={`model-catalog-status ${catalogError ? 'has-error' : ''}`} role="status">{catalogSyncLabel(anycapCatalog, catalogLoading, catalogError)}{catalogError && <span title={catalogError}> · 可重试</span>}</div>}
+                {currentModelUnlisted && pickerTool?.id === 'anycap' && <div className="model-legacy-notice">当前模型 {model} 未出现在最新目录中，已保留节点配置，可选择其他模型。</div>}
+                {visiblePickerModels.length === 0 && <div className="model-picker-empty">{modelQuery ? '没有找到匹配的模型' : '此分类暂无可用模型'}</div>}
+                {visiblePickerModels.map((item) => (
                   <button
                     className={item.id === model ? 'is-active' : ''}
                     key={item.id}
@@ -2980,10 +3226,10 @@ export function GenerationComposer() {
         <button
           className="composer-submit"
           type="button"
-          disabled={running}
+          disabled={running || modelUnavailableForRun}
           onClick={handleRun}
           aria-label={node.data.kind === 'video' && String(options.operation ?? 'generate') !== 'generate' ? '开始剪辑' : '生成'}
-          title={node.data.outputs.editPlan && String(options.operation ?? '') === 'ai-edit' ? '按当前方案渲染' : undefined}
+          title={modelUnavailableForRun ? '当前模型暂不可用，请刷新目录或选择其他模型' : node.data.outputs.editPlan && String(options.operation ?? '') === 'ai-edit' ? '按当前方案渲染' : undefined}
         >
           <Send size={22} />
         </button>
