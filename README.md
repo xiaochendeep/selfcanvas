@@ -92,14 +92,7 @@ worker 启动后会消费已有队列。接入模型前先核对待执行任务�
 
 AnyCap 目录支持实时刷新与离线快照；缓存不等于最新能力。参数边界见 [AnyCap 目录说明](docs/anycap/README.md)。界面入口不代表所有外部提供方都已配置或通过真实生成验收。
 
-## 部署与客户端
-
-- [阿里云内网部署](deploy/aliyun/README.md)：SelfCanvas + Sub2API，基于已有 VPN 隧道限制入口，并保留独立存储。
-- [Windows WSL / Ubuntu 部署](deploy/README.md)：部署脚本、运行依赖与服务检查。
-- [Codex MCP 接入](docs/codex/README.md)：HTTP / stdio、权限范围与配置示例。
-- [iPhone 内测客户端](ios/SelfCanvasMobile/README.md)：Xcode 工程、登录配置与构建方式；尚非正式 App Store 版本。
-
-根目录也提供 `docker-compose.yml`。其端口发布方式与专用内网部署不同；需要内网限定时请按阿里云部署说明配置。
+## 数据存储
 
 `.runtime/` 保存项目与运行状态，`output/` 保存生成文件；迁移前分别备份。真实 `.env`、部署凭据、运行数据和本机素材不纳入 Git。
 
