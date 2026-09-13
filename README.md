@@ -1,5 +1,9 @@
 # SelfCanvas
 
+## 许可证
+
+本项目原创代码采用 [MIT License](LICENSE)，允许商用、修改和分发，使用时须保留版权及许可声明。第三方依赖及另有标注的内容仍遵循各自的许可证；创作提示规则的 CC BY 4.0 来源与署名见[创作助手文档](docs/creative-studio.md#技能来源与改编)。
+
 面向 AI 短剧、分镜与多媒体创作的可自托管画布工作台。把文本、图片、视频、音频和参考素材连接到同一张画布，从创意草稿逐步推进到生成任务与文件交付。
 
 基于 React、TypeScript、React Flow、Zustand、Vite、Python API 与 Redis / BullMQ；提供 Codex MCP 接口和 SwiftUI iPhone 内测客户端。
